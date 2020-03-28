@@ -32,6 +32,7 @@
 #include <hadesmem/pelib/nt_headers.hpp>
 #include <hadesmem/pelib/section.hpp>
 #include <hadesmem/pelib/section_list.hpp>
+#include <hadesmem/pelib/tls_dir.hpp>
 
 #include <Windows.h>
 
@@ -44,6 +45,8 @@
 
 namespace fs = std::experimental::filesystem;
 
+template <typename T>
+T rebase(void *new_base, T address);
 fs::path get_output_path(const fs::path &input_path);
 PVOID find_remapped_base(const hadesmem::Process &process, PVOID base);
 void repair_binary(const fs::path &path,const hadesmem::Process &process,
@@ -130,6 +133,20 @@ PVOID find_remapped_base(const hadesmem::Process &process, PVOID base)
         "find_remapped_base failed to find remapped location");
 }
 
+template <typename T>
+T rebase(void *new_base, T address)
+{
+    const hadesmem::Process process(::GetCurrentProcessId());
+    const hadesmem::Region region(process, reinterpret_cast<const void *>(
+        address));
+
+    auto const rva = static_cast<std::uint64_t>(
+        reinterpret_cast<const char *>(address) -
+        reinterpret_cast<const char *>(region.GetAllocBase()));
+
+    return reinterpret_cast<T>(reinterpret_cast<char *>(new_base) + rva);
+}
+
 // modified from https://stackoverflow.com/a/9194117
 DWORD round_up(DWORD numToRound, DWORD multiple)
 {
@@ -198,6 +215,52 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
 
         section.UpdateWrite();
     }
+
+    auto const image_base = reinterpret_cast<void *>(
+        nt_header.GetImageBase());
+
+    // tls callbacks will point to the original (now unwritable) region of
+    // memory.  the addresses should be rebased to be consistent with the base
+    // address in the PE header.
+    hadesmem::TlsDir tls_dir(process, pe_file);
+
+    auto mem_tls_dir_in = reinterpret_cast<void **>(tls_dir.GetAddressOfCallBacks());
+    auto mem_tls_dir_out = rebase(base, mem_tls_dir_in);
+
+    while (*mem_tls_dir_in)
+    {
+        *mem_tls_dir_out = rebase(image_base, *mem_tls_dir_in);
+        ++mem_tls_dir_in;
+        ++mem_tls_dir_out;
+    }
+
+    const hadesmem::Region old_tls_region(process, reinterpret_cast<PVOID>(
+        tls_dir.GetAddressOfCallBacks()));
+
+    auto const tls_callback_rva = static_cast<std::uint64_t>(
+        reinterpret_cast<char *>(tls_dir.GetAddressOfCallBacks()) -
+        reinterpret_cast<char *>(old_tls_region.GetAllocBase()));
+
+    auto const output_tls_dir = nt_header.GetImageBase() + tls_callback_rva;
+
+    auto const new_tls_address = reinterpret_cast<PVOID>(
+        reinterpret_cast<char *>(base) + tls_callback_rva);
+
+    auto const new_start_address = rebase(image_base,
+        tls_dir.GetStartAddressOfRawData());
+    auto const new_end_address = rebase(image_base,
+        tls_dir.GetEndAddressOfRawData());
+    auto const new_index_address = rebase(image_base,
+        tls_dir.GetAddressOfIndex());
+    auto const new_cb_address = rebase(image_base,
+        tls_dir.GetAddressOfCallBacks());
+
+    tls_dir.SetStartAddressOfRawData(new_start_address);
+    tls_dir.SetEndAddressOfRawData(new_end_address);
+    tls_dir.SetAddressOfIndex(new_index_address);
+    tls_dir.SetAddressOfCallBacks(new_cb_address);
+
+    tls_dir.UpdateWrite();
 
     std::uint8_t buff[5];
 
