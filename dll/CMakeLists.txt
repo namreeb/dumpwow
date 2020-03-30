@@ -3,6 +3,7 @@ set(DLL_NAME unpacker)
 include_directories(Include ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR})
 
 set(SOURCE_FILES
+    concolic.cpp
     dumper.cpp
     log.cpp
     main.cpp

@@ -22,8 +22,17 @@
     SOFTWARE.
 */
 
+// define to disable TLS callbacks in memory and display a message box.  this
+// will result in an incorrect (read: probably broken?) exe dump, but will also
+// allow for attaching a debugger.
+#define DEBUG_DISABLE_TLS
+
+// define to enable verbose debug output on import resolution
+//#define DEBUG_IMPORT_RESOLUTION
+
 #include "misc.hpp"
 #include "log.hpp"
+#include "concolic.hpp"
 
 #include <hadesmem/region.hpp>
 #include <hadesmem/region_list.hpp>
@@ -178,6 +187,9 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
     hadesmem::SectionList section_list(process, pe_file);
     auto raw_data_pointer = nt_header.GetSizeOfHeaders();
 
+    // used later in import resolution
+    PVOID rdata = nullptr;
+
     for (auto &section : section_list)
     {
         auto const virtual_size = round_up(section.GetVirtualSize(),
@@ -186,6 +198,9 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
         auto const section_base = reinterpret_cast<PVOID>(
             reinterpret_cast<std::uint8_t *>(base) +
             section.GetVirtualAddress());
+
+        if (section.GetName() == ".rdata")
+            rdata = section_base;
 
         // for some reason the wow binary has section with unusual sizes.  that's
         // fine, but lets clean it up by enforcing section alignment from the pe
@@ -229,7 +244,11 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
 
     while (*mem_tls_dir_in)
     {
+#ifdef DEBUG_DISABLE_TLS
+        *mem_tls_dir_out = nullptr;
+#else
         *mem_tls_dir_out = rebase(image_base, *mem_tls_dir_in);
+#endif
         ++mem_tls_dir_in;
         ++mem_tls_dir_out;
     }
@@ -279,4 +298,132 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
 
         gLog << "True entry point:\t0x" << std::hex << new_ep << std::endl;
     }
+
+    // the second TLS callback will generate simple pointer decryption
+    // trampolines to mask calls to imported DLL functions.  to resolve
+    // these calls we will perform a concolic execution of the trampolines
+    // and see what function pointer results.
+    if (!rdata)
+        gLog << "Did not find .rdata section.  Skipping import resolution."
+        << std::endl;
+    else
+    {
+        const hadesmem::Region import_region(process, rdata);
+        auto const import_region_end = reinterpret_cast<PVOID>(
+            reinterpret_cast<std::uintptr_t>(import_region.GetBase()) +
+            import_region.GetSize());
+
+        for (auto current_import =
+            reinterpret_cast<PVOID *>(rdata);
+            current_import < import_region_end;
+            ++current_import)
+        {
+            auto const thunk_ea = *current_import;
+
+            if (!thunk_ea)
+                continue;
+
+            // if the thunk ea is not sane, skip it.  this heuristic is not
+            // necessary but greatly speeds up the process.  without it, each
+            // of these addresses would be examined and result in an exception
+            // when hadesmem calls VirtualQueryEx() and it fails.
+            if (reinterpret_cast<std::uint64_t>(thunk_ea) >> 0x30)
+                continue;
+
+            try
+            {
+                const hadesmem::Region thunk_region(process, thunk_ea);
+
+                if (thunk_region.GetType() == MEM_FREE)
+                {
+#ifdef DEBUG_IMPORT_RESOLUTION
+                    auto const rva =
+                        reinterpret_cast<std::uintptr_t>(current_import) -
+                        reinterpret_cast<std::uintptr_t>(base);
+
+                    gLog << "[Import Resolution]: Skipping import from "
+                        ".rdata + 0x" << std::hex << rva << " because it "
+                        "points to free memory" << std::endl;
+#endif
+                    continue;
+                }
+
+                if (thunk_region.GetProtect() == PAGE_EXECUTE)
+                {
+                    auto const rva =
+                        reinterpret_cast<std::uintptr_t>(current_import) -
+                        reinterpret_cast<std::uintptr_t>(base);
+
+                    gLog << "[Import Resolution]: Skipping import from "
+                        ".rdata + 0x" << std::hex << rva
+                        << " because it points to unreadble PAGE_EXECUTE "
+                        "memory.  If you see this, please file a bug."
+                        << std::endl;
+
+                    continue;
+                }
+
+                if (thunk_region.GetProtect() != PAGE_EXECUTE_READ &&
+                    thunk_region.GetProtect() != PAGE_EXECUTE_READWRITE &&
+                    thunk_region.GetProtect() != PAGE_EXECUTE_WRITECOPY)
+                {
+#ifdef DEBUG_IMPORT_RESOLUTION
+                    auto const rva =
+                        reinterpret_cast<std::uintptr_t>(current_import) -
+                        reinterpret_cast<std::uintptr_t>(base);
+
+                    gLog << "[Import Resolution]: Skipping import from "
+                        ".rdata + 0x" << std::hex << rva
+                        << " because it points to non-executable memory."
+                        << std::endl;
+#endif
+                    continue;
+                }
+
+                ConclicThreadContext ctx;
+
+                if (!conclic_begin(thunk_ea, ctx))
+                {
+                    gLog << "Concolic execution failed on thunk at 0x"
+                        << std::hex << thunk_ea << std::endl;
+
+                    std::stringstream str;
+
+                    str << "Concolic execution failed on thunk at 0x"
+                        << std::hex << thunk_ea;
+
+                    ::MessageBoxA(nullptr, str.str().c_str(), "DEBUG", 0);
+
+                    continue;
+                }
+
+                break;
+            }
+            catch (const std::exception &)
+            {
+#ifdef DEBUG_IMPORT_RESOLUTION
+                auto const rva =
+                    reinterpret_cast<std::uintptr_t>(current_import) -
+                    reinterpret_cast<std::uintptr_t>(base);
+
+                gLog << "[Import Resolution]: Skipping import from "
+                    ".rdata + 0x" << std::hex << rva
+                    << " because querying region information for the thunk "
+                    "failed.  (0x" << thunk_ea << ")" << std::endl;
+#endif
+                continue;
+            }
+        }
+    }
+
+#ifdef DEBUG_DISABLE_TLS
+    auto const call_site = reinterpret_cast<void *>(
+        reinterpret_cast<char *>(base) + 0x81F5E5);
+    std::stringstream str;
+
+    str << "Call site: 0x" << std::hex << call_site
+        << "\nBase: 0x" << base;
+
+    ::MessageBoxA(nullptr, str.str().c_str(), "TLS Callbacks Disabled", 0);
+#endif
 }
