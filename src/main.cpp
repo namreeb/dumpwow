@@ -44,13 +44,11 @@
 #include <chrono>
 #include <fstream>
 #include <cstdio>
+#include <atomic>
 
 #pragma intrinsic(_ReturnAddress)
 
 #define CALL_FIRST  1
-
-bool FindVEHCallerRVA();
-size_t g_veh_caller_rva;
 
 namespace fs = std::experimental::filesystem;
 
@@ -59,10 +57,13 @@ bool launch_wow_suspended(const fs::path &path,
 hadesmem::PeFile find_wow_pe(const hadesmem::Process &process);
 void *find_tls_callback_directory(const hadesmem::Process &process,
     const hadesmem::PeFile &pe);
-
+BOOL ControlHandler(DWORD ctrl_type);
+bool FindVEHCallerRVA();
 size_t find_call_tls_initializers_rva();
-
 void process_log_file(const fs::path &exe_path);
+
+size_t g_veh_caller_rva;
+std::atomic_bool g_exit_wow;
 
 int main(int argc, char *argv[])
 {
@@ -90,6 +91,8 @@ int main(int argc, char *argv[])
             std::cerr << "launch_wow_suspended failed" << std::endl;
             return EXIT_FAILURE;
         }
+
+        g_exit_wow = false;
 
         const hadesmem::Process process(proc_info.dwProcessId,
             proc_info.hProcess);
@@ -153,6 +156,12 @@ int main(int argc, char *argv[])
         hadesmem::Write<void *>(process, tls_callback_directory,
             first_callback);
 
+        if (!::SetConsoleCtrlHandler(ControlHandler, TRUE))
+        {
+            std::cerr << "SetConsoleCtrlHandler failed" << std::endl;
+            return EXIT_FAILURE;
+        }
+
         CONTEXT context;
         memset(&context, 0, sizeof(context));
         context.ContextFlags = CONTEXT_ALL;
@@ -168,6 +177,14 @@ int main(int argc, char *argv[])
 
         do
         {
+            if (g_exit_wow)
+            {
+                std::cout << "Received CTRL-C.  Terminating wow..."
+                    << std::endl;
+                ::TerminateProcess(process.GetHandle(), 0);
+                g_exit_wow = false;
+            }
+
             if (!::GetExitCodeProcess(proc_info.hProcess, &exit_code))
             {
                 std::cerr << "GetExitCodeProcess failed" << std::endl;
@@ -187,6 +204,12 @@ int main(int argc, char *argv[])
             // so let us sleep for a little while and then check again
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         } while (true);
+
+        if (!::SetConsoleCtrlHandler(ControlHandler, FALSE))
+        {
+            std::cerr << "SetConsoleCtrlHandler failed" << std::endl;
+            return EXIT_FAILURE;
+        }
 
         std::cout << "Wow exited with code:   0x" << std::hex << exit_code
             << std::endl;
@@ -415,6 +438,18 @@ void process_log_file(const fs::path &exe_path)
     std::cout << "\nLog:\n\n" << &file_data[0];
 
     std::remove(log_path.string().c_str());
+}
 
-    std::cout << "\nLog removed" << std::endl;
+BOOL ControlHandler(DWORD ctrl_type)
+{
+    if (ctrl_type == CTRL_C_EVENT)
+    {
+        g_exit_wow = true;
+        return TRUE;
+    }
+
+    std::cout << "Received unrecognized event: " << std::dec << ctrl_type
+        << std::endl;
+
+    return FALSE;
 }
