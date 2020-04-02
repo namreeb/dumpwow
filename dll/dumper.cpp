@@ -46,11 +46,12 @@
 namespace fs = std::experimental::filesystem;
 
 template <typename T>
-T rebase(void *new_base, T address);
-fs::path get_output_path(const fs::path &input_path);
-PVOID find_remapped_base(const hadesmem::Process &process, PVOID base);
-void repair_binary(const fs::path &path,const hadesmem::Process &process,
-    PVOID base, std::vector<std::uint8_t> &pe);
+T rebase(void* new_base, T address);
+fs::path get_output_path(const fs::path& input_path);
+PVOID find_remapped_base(const hadesmem::Process& process, PVOID base);
+void repair_binary(const fs::path& path, const hadesmem::Process& process,
+    PVOID base, std::vector<std::uint8_t>& pe);
+void fix_relocation(PVOID base);
 
 void do_dump(PVOID base, DWORD pe_size)
 {
@@ -65,6 +66,7 @@ void do_dump(PVOID base, DWORD pe_size)
     // memory_pe will hold the PE header data before any changes were made
     std::vector<std::uint8_t> memory_pe(pe_size);
     repair_binary(exe_path, process, base, memory_pe);
+    fix_relocation(base);
 
     std::ofstream out(output_path, std::ios::binary);
 
@@ -76,14 +78,14 @@ void do_dump(PVOID base, DWORD pe_size)
         pe_size);
     const hadesmem::NtHeaders nt_header(process, pe_file);
 
-    out.write(reinterpret_cast<const char *>(base),
+    out.write(reinterpret_cast<const char*>(base),
         static_cast<std::streamsize>(nt_header.GetSizeOfHeaders()));
 
     // second, write sections
     const hadesmem::SectionList section_list(process, pe_file);
-    for (auto const &section : section_list)
+    for (auto const& section : section_list)
     {
-        auto const section_base = reinterpret_cast<const char *>(base) +
+        auto const section_base = reinterpret_cast<const char*>(base) +
             section.GetVirtualAddress();
         out.write(section_base, section.GetSizeOfRawData());
     }
@@ -91,7 +93,7 @@ void do_dump(PVOID base, DWORD pe_size)
     out.close();
 }
 
-fs::path get_output_path(const fs::path &input_path)
+fs::path get_output_path(const fs::path& input_path)
 {
     auto const dir = input_path.parent_path();
     auto const extension = input_path.extension();
@@ -100,7 +102,7 @@ fs::path get_output_path(const fs::path &input_path)
     return dir / (stem.string() + "_unpacked" + extension.string());
 }
 
-PVOID find_remapped_base(const hadesmem::Process &process, PVOID base)
+PVOID find_remapped_base(const hadesmem::Process& process, PVOID base)
 {
     const hadesmem::RegionList region_list(process);
 
@@ -108,7 +110,7 @@ PVOID find_remapped_base(const hadesmem::Process &process, PVOID base)
         0);
 
     // find the PE header in the remapped location
-    for (auto const &region : region_list)
+    for (auto const& region : region_list)
     {
         if (region.GetState() == MEM_FREE)
             continue;
@@ -134,17 +136,17 @@ PVOID find_remapped_base(const hadesmem::Process &process, PVOID base)
 }
 
 template <typename T>
-T rebase(void *new_base, T address)
+T rebase(void* new_base, T address)
 {
     const hadesmem::Process process(::GetCurrentProcessId());
-    const hadesmem::Region region(process, reinterpret_cast<const void *>(
+    const hadesmem::Region region(process, reinterpret_cast<const void*>(
         address));
 
     auto const rva = static_cast<std::uint64_t>(
-        reinterpret_cast<const char *>(address) -
-        reinterpret_cast<const char *>(region.GetAllocBase()));
+        reinterpret_cast<const char*>(address) -
+        reinterpret_cast<const char*>(region.GetAllocBase()));
 
-    return reinterpret_cast<T>(reinterpret_cast<char *>(new_base) + rva);
+    return reinterpret_cast<T>(reinterpret_cast<char*>(new_base) + rva);
 }
 
 // modified from https://stackoverflow.com/a/9194117
@@ -154,8 +156,46 @@ DWORD round_up(DWORD numToRound, DWORD multiple)
     return ((numToRound + multiple - 1) / multiple) * multiple;
 }
 
-void repair_binary(const fs::path &path, const hadesmem::Process &process,
-    PVOID base, std::vector<std::uint8_t> &pe)
+void fix_relocation(PVOID image_base)
+{
+    const auto module = PIMAGE_DOS_HEADER(image_base);
+    auto headers = PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) + module->e_lfanew);
+    auto relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(module) + headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+
+    while (relocation->SizeOfBlock && relocation->VirtualAddress)
+    {
+        const auto block_relocation_count = (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+        const auto block_entries = PWORD(reinterpret_cast<char*>(relocation) + sizeof(IMAGE_BASE_RELOCATION));
+
+        for (size_t i = 0; i < block_relocation_count; i++)
+        {
+            switch (block_entries[i] >> 12)
+            {
+            case IMAGE_REL_BASED_DIR64:
+            {
+                const auto p = reinterpret_cast<uintptr_t*>(reinterpret_cast<char*>(module) + relocation->VirtualAddress + (block_entries[i] & 0xFFF));
+                *p = rebase(image_base, *p);
+            }
+            break;
+            case IMAGE_REL_BASED_ABSOLUTE:
+            case IMAGE_REL_BASED_HIGHLOW:
+            case IMAGE_REL_BASED_HIGH:
+            case IMAGE_REL_BASED_LOW:
+            default:
+            {
+                // No need to fix absolute relocation it's just a dummy for alignment.
+                // Other relocation types are not used in 64bit binaries.
+            }
+            break;
+            }
+        }
+
+        relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(relocation) + relocation->SizeOfBlock);
+    }
+}
+
+void repair_binary(const fs::path& path, const hadesmem::Process& process,
+    PVOID base, std::vector<std::uint8_t>& pe)
 {
     // copy the current PE header into the vector to save in case we need it
     memcpy(&pe[0], base, pe.size());
@@ -178,13 +218,13 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
     hadesmem::SectionList section_list(process, pe_file);
     auto raw_data_pointer = nt_header.GetSizeOfHeaders();
 
-    for (auto &section : section_list)
+    for (auto& section : section_list)
     {
         auto const virtual_size = round_up(section.GetVirtualSize(),
             nt_header.GetSectionAlignment());
 
         auto const section_base = reinterpret_cast<PVOID>(
-            reinterpret_cast<std::uint8_t *>(base) +
+            reinterpret_cast<std::uint8_t*>(base) +
             section.GetVirtualAddress());
 
         // for some reason the wow binary has section with unusual sizes.  that's
@@ -196,7 +236,7 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
         // the end as we can.
         for (auto remain = virtual_size; remain != 0; --remain)
         {
-            auto const curr = reinterpret_cast<const std::uint8_t *>(
+            auto const curr = reinterpret_cast<const std::uint8_t*>(
                 section_base) + remain - 1;
 
             // we cannot shrink beyond this point
@@ -216,7 +256,7 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
         section.UpdateWrite();
     }
 
-    auto const image_base = reinterpret_cast<void *>(
+    auto const image_base = reinterpret_cast<void*>(
         nt_header.GetImageBase());
 
     // tls callbacks will point to the original (now unwritable) region of
@@ -224,7 +264,7 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
     // address in the PE header.
     hadesmem::TlsDir tls_dir(process, pe_file);
 
-    auto mem_tls_dir_in = reinterpret_cast<void **>(tls_dir.GetAddressOfCallBacks());
+    auto mem_tls_dir_in = reinterpret_cast<void**>(tls_dir.GetAddressOfCallBacks());
     auto mem_tls_dir_out = rebase(base, mem_tls_dir_in);
 
     while (*mem_tls_dir_in)
@@ -238,13 +278,13 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
         tls_dir.GetAddressOfCallBacks()));
 
     auto const tls_callback_rva = static_cast<std::uint64_t>(
-        reinterpret_cast<char *>(tls_dir.GetAddressOfCallBacks()) -
-        reinterpret_cast<char *>(old_tls_region.GetAllocBase()));
+        reinterpret_cast<char*>(tls_dir.GetAddressOfCallBacks()) -
+        reinterpret_cast<char*>(old_tls_region.GetAllocBase()));
 
     auto const output_tls_dir = nt_header.GetImageBase() + tls_callback_rva;
 
     auto const new_tls_address = reinterpret_cast<PVOID>(
-        reinterpret_cast<char *>(base) + tls_callback_rva);
+        reinterpret_cast<char*>(base) + tls_callback_rva);
 
     auto const new_start_address = rebase(image_base,
         tls_dir.GetStartAddressOfRawData());
@@ -264,17 +304,17 @@ void repair_binary(const fs::path &path, const hadesmem::Process &process,
 
     std::uint8_t buff[5];
 
-    auto const entry_point = reinterpret_cast<const char *>(base) +
+    auto const entry_point = reinterpret_cast<const char*>(base) +
         nt_header.GetAddressOfEntryPoint();
 
     memcpy(buff, entry_point, sizeof(buff));
 
     if (buff[0] == 0xE9)
     {
-        auto const new_ep_offset = *reinterpret_cast<const std::int32_t *>(
+        auto const new_ep_offset = *reinterpret_cast<const std::int32_t*>(
             entry_point + 1);
 
-        auto const new_ep = reinterpret_cast<const void *>(entry_point +
+        auto const new_ep = reinterpret_cast<const void*>(entry_point +
             new_ep_offset + 5);
 
         gLog << "True entry point:\t0x" << std::hex << new_ep << std::endl;

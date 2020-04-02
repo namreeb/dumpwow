@@ -24,9 +24,11 @@
 
 #pragma once
 
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
+
 #include <Windows.h>
 
-#include <filesystem>
+#include <experimental/filesystem>
 #include <vector>
 #include <cstdint>
 

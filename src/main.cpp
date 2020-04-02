@@ -21,6 +21,7 @@
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 */
+#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
 
 #include "raii_proc.hpp"
 
@@ -39,7 +40,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
-#include <filesystem>
+#include <experimental/filesystem>
 #include <thread>
 #include <chrono>
 #include <fstream>
@@ -91,8 +92,7 @@ int main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
-        const hadesmem::Process process(proc_info.dwProcessId,
-            proc_info.hProcess);
+        const hadesmem::Process process(proc_info.dwProcessId);
 
         // ensure process is killed upon exit
         const RaiiProc proc_killer(process.GetId());
