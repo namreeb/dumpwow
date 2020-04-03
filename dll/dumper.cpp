@@ -159,13 +159,19 @@ DWORD round_up(DWORD numToRound, DWORD multiple)
 void fix_relocation(PVOID image_base)
 {
     const auto module = PIMAGE_DOS_HEADER(image_base);
-    auto headers = PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) + module->e_lfanew);
-    auto relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(module) + headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
+    auto headers = PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) + 
+        module->e_lfanew);
+    auto relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(module) + 
+        headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+        .VirtualAddress);
 
     while (relocation->SizeOfBlock && relocation->VirtualAddress)
     {
-        const auto block_relocation_count = (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-        const auto block_entries = PWORD(reinterpret_cast<char*>(relocation) + sizeof(IMAGE_BASE_RELOCATION));
+        const auto block_relocation_count = 
+            (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
+            sizeof(WORD);
+        const auto block_entries = PWORD(reinterpret_cast<char*>(relocation) + 
+            sizeof(IMAGE_BASE_RELOCATION));
 
         for (size_t i = 0; i < block_relocation_count; i++)
         {
@@ -173,7 +179,9 @@ void fix_relocation(PVOID image_base)
             {
             case IMAGE_REL_BASED_DIR64:
             {
-                const auto p = reinterpret_cast<uintptr_t*>(reinterpret_cast<char*>(module) + relocation->VirtualAddress + (block_entries[i] & 0xFFF));
+                const auto p = reinterpret_cast<uintptr_t*>(
+                    reinterpret_cast<char*>(module) +
+                    relocation->VirtualAddress + (block_entries[i] & 0xFFF));
                 *p = rebase(image_base, *p);
             }
             break;
@@ -190,7 +198,8 @@ void fix_relocation(PVOID image_base)
             }
         }
 
-        relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(relocation) + relocation->SizeOfBlock);
+        relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(relocation) +
+            relocation->SizeOfBlock);
     }
 }
 
