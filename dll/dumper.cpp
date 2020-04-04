@@ -52,15 +52,11 @@
 
 namespace fs = std::experimental::filesystem;
 
-template <typename T>
-
-T rebase(void* new_base, T address);
 fs::path get_output_path(const fs::path& input_path);
 PVOID find_remapped_base(const hadesmem::Process& process, PVOID base);
 void repair_binary(const fs::path &path,const hadesmem::Process &process,
     PVOID base, std::vector<std::uint8_t> &pe,
     std::vector<std::uint8_t> &import_data);
-void fix_relocation(PVOID base);
 
 void do_dump(PVOID base, DWORD pe_size)
 {
