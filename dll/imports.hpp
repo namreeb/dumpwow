@@ -24,34 +24,14 @@
 
 #pragma once
 
-#include <ostream>
-#include <sstream>
-#include <functional>
+#include <hadesmem/process.hpp>
+#include <hadesmem/pelib/pe_file.hpp>
 
-class LogStreamBuffer : public std::stringbuf
-{
-    private:
-        std::function<void(const std::string &)> _callback;
+#include <Windows.h>
 
-    public:
-        LogStreamBuffer(std::function<void(const std::string &)> callback)
-            : _callback(callback) {}
-        int sync();
-};
+#include <vector>
+#include <cstdint>
 
-class Log : public std::ostream
-{
-    private:
-        LogStreamBuffer _buffer;
-
-    public:
-        Log(std::function<void(const std::string &)> callback);
-};
-
-std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str);
-
-// log to file
-extern Log gLog;
-
-// show a message box
-extern Log gMbLog;
+void rebuild_imports(const hadesmem::Process &process,
+    const hadesmem::PeFile &pe_file, PVOID rdata,
+    std::vector<std::uint8_t> &buffer);

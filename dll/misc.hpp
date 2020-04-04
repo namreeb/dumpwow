@@ -34,3 +34,4 @@ namespace fs = std::experimental::filesystem;
 
 fs::path get_exe_path();
 std::vector<std::uint8_t> read_pe_header_from_exe(const fs::path &exe, DWORD pe_size);
+DWORD round_up(DWORD numToRound, DWORD multiple);

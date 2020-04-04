@@ -27,18 +27,16 @@
 #include <Windows.h>
 
 #include <cstdint>
-#include <sstream>
 
 namespace
 {
 template <typename T>
-T read(PVOID &address, bool advance=true)
+T read(PVOID &address)
 {
     auto const ret_ptr = reinterpret_cast<T *>(address);
 
-    if (advance)
-        address = reinterpret_cast<PVOID>(
-            reinterpret_cast<std::uintptr_t>(address) + sizeof(T));
+    address = reinterpret_cast<PVOID>(
+        reinterpret_cast<std::uintptr_t>(address) + sizeof(T));
 
     return *ret_ptr;
 }
@@ -74,7 +72,7 @@ bool conclic_begin(PVOID start, ConclicThreadContext &context)
             {
                 auto const offset = read<std::int32_t>(current);
                 current = reinterpret_cast<PVOID>(
-                    reinterpret_cast<std::uintptr_t>(current) + offset + 5);
+                    reinterpret_cast<std::uintptr_t>(current) + offset);
                 break;
             }
             case 0x48:

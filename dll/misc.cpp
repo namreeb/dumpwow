@@ -56,3 +56,10 @@ std::vector<std::uint8_t> read_pe_header_from_exe(const fs::path &exe, DWORD siz
 
     return std::move(result);
 }
+
+// modified from https://stackoverflow.com/a/9194117
+DWORD round_up(DWORD numToRound, DWORD multiple)
+{
+    assert(multiple > 0);
+    return ((numToRound + multiple - 1) / multiple) * multiple;
+}
