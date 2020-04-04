@@ -6,6 +6,7 @@ set(SOURCE_FILES
     concolic.cpp
     dumper.cpp
     imports.cpp
+    relocations.cpp
     log.cpp
     main.cpp
     misc.cpp

@@ -32,8 +32,9 @@
 
 fs::path get_exe_path()
 {
-    TCHAR filename[256];
-    if (!::GetModuleFileName(nullptr, filename, sizeof(filename)))
+    TCHAR filename[1024];
+    if (!::GetModuleFileName(nullptr, filename, 
+                             sizeof(filename) / sizeof(TCHAR)))
     {
         throw std::runtime_error("GetModuleFileName() failed");
     }
