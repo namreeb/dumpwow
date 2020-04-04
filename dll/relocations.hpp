@@ -24,32 +24,6 @@
 
 #pragma once
 
-#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
-
 #include <Windows.h>
 
-#include <experimental/filesystem>
-#include <vector>
-#include <cstdint>
-
-#include <hadesmem/region.hpp>
-
-namespace fs = std::experimental::filesystem;
-
-fs::path get_exe_path();
-std::vector<std::uint8_t> read_pe_header_from_exe(const fs::path &exe, DWORD pe_size);
-DWORD round_up(DWORD numToRound, DWORD multiple);
-
-template <typename T>
-T rebase(void* new_base, T address)
-{
-    const hadesmem::Process process(::GetCurrentProcessId());
-    const hadesmem::Region region(process, reinterpret_cast<const void*>(
-        address));
-
-    auto const rva = static_cast<std::uint64_t>(
-        reinterpret_cast<const char*>(address) -
-        reinterpret_cast<const char*>(region.GetAllocBase()));
-
-    return reinterpret_cast<T>(reinterpret_cast<char*>(new_base) + rva);
-}
+void fix_relocation(PVOID base);

@@ -30,6 +30,7 @@
 #include "misc.hpp"
 #include "log.hpp"
 #include "imports.hpp"
+#include "relocations.hpp"
 
 #include <hadesmem/region.hpp>
 #include <hadesmem/region_list.hpp>
@@ -151,67 +152,6 @@ PVOID find_remapped_base(const hadesmem::Process& process, PVOID base)
 
     throw std::runtime_error(
         "find_remapped_base failed to find remapped location");
-}
-
-template <typename T>
-T rebase(void* new_base, T address)
-{
-    const hadesmem::Process process(::GetCurrentProcessId());
-    const hadesmem::Region region(process, reinterpret_cast<const void*>(
-        address));
-
-    auto const rva = static_cast<std::uint64_t>(
-        reinterpret_cast<const char*>(address) -
-        reinterpret_cast<const char*>(region.GetAllocBase()));
-
-    return reinterpret_cast<T>(reinterpret_cast<char*>(new_base) + rva);
-}
-
-void fix_relocation(PVOID image_base)
-{
-    const auto module = PIMAGE_DOS_HEADER(image_base);
-    auto headers = PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) + 
-        module->e_lfanew);
-    auto relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(module) + 
-        headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-        .VirtualAddress);
-
-    while (relocation->SizeOfBlock && relocation->VirtualAddress)
-    {
-        const auto block_relocation_count = 
-            (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
-            sizeof(WORD);
-        const auto block_entries = PWORD(reinterpret_cast<char*>(relocation) + 
-            sizeof(IMAGE_BASE_RELOCATION));
-
-        for (size_t i = 0; i < block_relocation_count; i++)
-        {
-            switch (block_entries[i] >> 12)
-            {
-            case IMAGE_REL_BASED_DIR64:
-            {
-                const auto p = reinterpret_cast<uintptr_t*>(
-                    reinterpret_cast<char*>(module) +
-                    relocation->VirtualAddress + (block_entries[i] & 0xFFF));
-                *p = rebase(image_base, *p);
-            }
-            break;
-            case IMAGE_REL_BASED_ABSOLUTE:
-            case IMAGE_REL_BASED_HIGHLOW:
-            case IMAGE_REL_BASED_HIGH:
-            case IMAGE_REL_BASED_LOW:
-            default:
-            {
-                // No need to fix absolute relocation it's just a dummy for alignment.
-                // Other relocation types are not used in 64bit binaries.
-            }
-            break;
-            }
-        }
-
-        relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(relocation) +
-            relocation->SizeOfBlock);
-    }
 }
 
 void repair_binary(const fs::path &path, const hadesmem::Process &process,
