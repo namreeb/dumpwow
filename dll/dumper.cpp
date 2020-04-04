@@ -22,8 +22,14 @@
     SOFTWARE.
 */
 
+// define to disable TLS callbacks in memory and display a message box.  this
+// will result in an incorrect (read: probably broken?) exe dump, but will also
+// allow for attaching a debugger.
+//#define DEBUG_DISABLE_TLS
+
 #include "misc.hpp"
 #include "log.hpp"
+#include "imports.hpp"
 
 #include <hadesmem/region.hpp>
 #include <hadesmem/region_list.hpp>
@@ -46,11 +52,13 @@
 namespace fs = std::experimental::filesystem;
 
 template <typename T>
+
 T rebase(void* new_base, T address);
 fs::path get_output_path(const fs::path& input_path);
 PVOID find_remapped_base(const hadesmem::Process& process, PVOID base);
-void repair_binary(const fs::path& path, const hadesmem::Process& process,
-    PVOID base, std::vector<std::uint8_t>& pe);
+void repair_binary(const fs::path &path,const hadesmem::Process &process,
+    PVOID base, std::vector<std::uint8_t> &pe,
+    std::vector<std::uint8_t> &import_data);
 void fix_relocation(PVOID base);
 
 void do_dump(PVOID base, DWORD pe_size)
@@ -65,7 +73,8 @@ void do_dump(PVOID base, DWORD pe_size)
 
     // memory_pe will hold the PE header data before any changes were made
     std::vector<std::uint8_t> memory_pe(pe_size);
-    repair_binary(exe_path, process, base, memory_pe);
+    std::vector<std::uint8_t> import_data;
+    repair_binary(exe_path, process, base, memory_pe, import_data);
     fix_relocation(base);
 
     std::ofstream out(output_path, std::ios::binary);
@@ -85,10 +94,19 @@ void do_dump(PVOID base, DWORD pe_size)
     const hadesmem::SectionList section_list(process, pe_file);
     for (auto const& section : section_list)
     {
-        auto const section_base = reinterpret_cast<const char*>(base) +
+        // TODO: better logic to identify our section here
+        if (section.GetName() == ".wowim")
+            continue;
+
+        auto const section_base = reinterpret_cast<const char *>(base) +
             section.GetVirtualAddress();
         out.write(section_base, section.GetSizeOfRawData());
     }
+
+    // third, write the new section created for imports
+    if (!import_data.empty())
+        out.write(reinterpret_cast<const char *>(&import_data[0]),
+            import_data.size());
 
     out.close();
 }
@@ -149,13 +167,6 @@ T rebase(void* new_base, T address)
     return reinterpret_cast<T>(reinterpret_cast<char*>(new_base) + rva);
 }
 
-// modified from https://stackoverflow.com/a/9194117
-DWORD round_up(DWORD numToRound, DWORD multiple)
-{
-    assert(multiple > 0);
-    return ((numToRound + multiple - 1) / multiple) * multiple;
-}
-
 void fix_relocation(PVOID image_base)
 {
     const auto module = PIMAGE_DOS_HEADER(image_base);
@@ -203,8 +214,9 @@ void fix_relocation(PVOID image_base)
     }
 }
 
-void repair_binary(const fs::path& path, const hadesmem::Process& process,
-    PVOID base, std::vector<std::uint8_t>& pe)
+void repair_binary(const fs::path &path, const hadesmem::Process &process,
+    PVOID base, std::vector<std::uint8_t> &pe,
+    std::vector<std::uint8_t> &import_data)
 {
     // copy the current PE header into the vector to save in case we need it
     memcpy(&pe[0], base, pe.size());
@@ -227,7 +239,10 @@ void repair_binary(const fs::path& path, const hadesmem::Process& process,
     hadesmem::SectionList section_list(process, pe_file);
     auto raw_data_pointer = nt_header.GetSizeOfHeaders();
 
-    for (auto& section : section_list)
+    // used later in import resolution
+    PVOID rdata = nullptr;
+
+    for (auto &section : section_list)
     {
         auto const virtual_size = round_up(section.GetVirtualSize(),
             nt_header.GetSectionAlignment());
@@ -235,6 +250,9 @@ void repair_binary(const fs::path& path, const hadesmem::Process& process,
         auto const section_base = reinterpret_cast<PVOID>(
             reinterpret_cast<std::uint8_t*>(base) +
             section.GetVirtualAddress());
+
+        if (section.GetName() == ".rdata")
+            rdata = section_base;
 
         // for some reason the wow binary has section with unusual sizes.  that's
         // fine, but lets clean it up by enforcing section alignment from the pe
@@ -278,7 +296,11 @@ void repair_binary(const fs::path& path, const hadesmem::Process& process,
 
     while (*mem_tls_dir_in)
     {
+#ifdef DEBUG_DISABLE_TLS
+        *mem_tls_dir_out = nullptr;
+#else
         *mem_tls_dir_out = rebase(image_base, *mem_tls_dir_in);
+#endif
         ++mem_tls_dir_in;
         ++mem_tls_dir_out;
     }
@@ -328,4 +350,22 @@ void repair_binary(const fs::path& path, const hadesmem::Process& process,
 
         gLog << "True entry point:\t0x" << std::hex << new_ep << std::endl;
     }
+
+    // the second TLS callback will generate simple pointer decryption
+    // trampolines to mask calls to imported DLL functions.  to resolve
+    // these calls we will perform a concolic execution of the trampolines
+    // and see what function pointer results.
+    if (rdata)
+        rebuild_imports(process, pe_file, rdata, import_data);
+    else
+        gLog << "Did not find .rdata section.  Skipping import resolution."
+        << std::endl;
+
+#ifdef DEBUG_DISABLE_TLS
+    auto const call_site = reinterpret_cast<void *>(
+        reinterpret_cast<char *>(base) + 0x81F5E5);
+
+    gMbLog << "Call site: 0x" << std::hex << call_site
+        << "\nBase: 0x" << base << std::endl;
+#endif
 }

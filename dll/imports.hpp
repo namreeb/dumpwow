@@ -22,44 +22,16 @@
     SOFTWARE.
 */
 
-#include "misc.hpp"
+#pragma once
 
+#include <hadesmem/process.hpp>
 #include <hadesmem/pelib/pe_file.hpp>
+
+#include <Windows.h>
 
 #include <vector>
 #include <cstdint>
-#include <fstream>
 
-fs::path get_exe_path()
-{
-    TCHAR filename[1024];
-    if (!::GetModuleFileName(nullptr, filename, sizeof(filename)))
-    {
-        throw std::runtime_error("GetModuleFileName() failed");
-    }
-
-    return fs::path(filename);
-}
-
-std::vector<std::uint8_t> read_pe_header_from_exe(const fs::path &exe, DWORD size)
-{
-    std::vector<std::uint8_t> result(size);
-
-    std::ifstream in(exe, std::ios::binary);
-
-    if (!in)
-        throw std::runtime_error("Failed to read PE header from binary");
-
-    in.read(reinterpret_cast<char *>(&result[0]),
-        static_cast<std::streamsize>(result.size()));
-    in.close();
-
-    return std::move(result);
-}
-
-// modified from https://stackoverflow.com/a/9194117
-DWORD round_up(DWORD numToRound, DWORD multiple)
-{
-    assert(multiple > 0);
-    return ((numToRound + multiple - 1) / multiple) * multiple;
-}
+void rebuild_imports(const hadesmem::Process &process,
+    const hadesmem::PeFile &pe_file, PVOID rdata,
+    std::vector<std::uint8_t> &buffer);

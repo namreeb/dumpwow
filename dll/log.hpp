@@ -48,4 +48,10 @@ class Log : public std::ostream
         Log(std::function<void(const std::string &)> callback);
 };
 
+std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str);
+
+// log to file
 extern Log gLog;
+
+// show a message box
+extern Log gMbLog;

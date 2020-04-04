@@ -40,8 +40,16 @@ int LogStreamBuffer::sync()
 
     return std::stringbuf::sync();
 }
+Log::Log(std::function<void(const std::string &)> callback)
+    : _buffer(callback), std::ostream(&_buffer) {}
 
-void LogCallback(const std::string &buff)
+std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str)
+{
+    const std::string s_narrow(_Str.begin(), _Str.end());
+    return _Ostr << s_narrow;
+}
+
+Log gLog([] (const std::string &buff)
 {
     auto const exe_path = get_exe_path();
     auto const parent = exe_path.parent_path();
@@ -54,10 +62,10 @@ void LogCallback(const std::string &buff)
 
     out << buff;
     out.close();
-}
+});
 
-Log::Log(std::function<void(const std::string &)> callback)
-    : _buffer(callback), std::ostream(&_buffer) {}
-
-Log gLog(LogCallback);
+Log gMbLog([] (const std::string &buf)
+{
+    ::MessageBoxA(nullptr, buf.c_str(), "DEBUG", 0);
+});
 

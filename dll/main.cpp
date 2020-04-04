@@ -35,9 +35,6 @@
 #include <iomanip>
 #include <string>
 
-// hook LoadLibrary to record loaded modules
-void HookLoadLibrary(const hadesmem::Process &process);
-
 // hook LdrpCallTlsInitializers to replace the reason 
 void HookCallTLSCallbacks(const hadesmem::Process &process, size_t rva,
     DWORD main_thread_id);
@@ -45,6 +42,9 @@ void HookCallTLSCallbacks(const hadesmem::Process &process, size_t rva,
 // hook BaseThreadInitThunk which will call the entry point
 void HookBaseThreadInitThunk(const hadesmem::Process &process,
     DWORD main_thread_id, PVOID wow_base, DWORD wow_size);
+
+// hook NtSetInformationThread to prevent ThreadHideFromDebugger
+void HookSetInformationThread(const hadesmem::Process &process);
 
 extern void do_dump(PVOID, DWORD);
 
@@ -56,11 +56,10 @@ extern "C" __declspec(dllexport) void Initialize(
     {
         const hadesmem::Process process(::GetCurrentProcessId());
 
-        //HookLoadLibrary(process);
-
         HookCallTLSCallbacks(process, call_tls_initializers_rva,
             main_thread_id);
         HookBaseThreadInitThunk(process, main_thread_id, wow_base, wow_size);
+        HookSetInformationThread(process);
     }
     catch (const std::exception &e)
     {
@@ -68,35 +67,6 @@ extern "C" __declspec(dllexport) void Initialize(
         str << "Unpacker initialization failed: " << e.what();
         ::MessageBox(nullptr, str.str().c_str(), L"Unpacker", 0);
     }
-}
-
-void HookLoadLibrary(const hadesmem::Process &process)
-{
-    auto const kernelbase = ::GetModuleHandle(L"kernelbase.dll");
-
-    if (!kernelbase)
-        throw std::runtime_error("kernelbase.dll not found");
-
-    using LoadLibraryExWT = HMODULE(WINAPI *)(LPCWSTR, HANDLE, DWORD);
-
-    auto const orig = hadesmem::detail::AliasCast<LoadLibraryExWT>(
-        ::GetProcAddress(kernelbase, "LoadLibraryExW"));
-
-    auto const load_library_detour = new hadesmem::PatchDetour<
-        LoadLibraryExWT>(process, orig,
-            [] (hadesmem::PatchDetourBase *detour, LPCWSTR fileName, HANDLE hFile, DWORD flags)
-        {
-            auto const ret = detour->GetTrampolineT<LoadLibraryExWT>()(
-                fileName, hFile, flags);
-
-            const std::wstring wide_file(fileName);
-            const std::string file(wide_file.begin(), wide_file.end());
-            gLog << "LoadLibraryExW(\"" << file << "\") = 0x" << std::hex
-                << ret << std::endl;
-            return ret;
-        });
-
-    load_library_detour->Apply();
 }
 
 void HookCallTLSCallbacks(const hadesmem::Process &process, size_t rva,
@@ -224,4 +194,40 @@ void HookBaseThreadInitThunk(const hadesmem::Process &process,
         });
 
     init_detour->Apply();
+}
+
+void HookSetInformationThread(const hadesmem::Process &process)
+{
+    auto const ntdll = ::GetModuleHandle(L"ntdll");
+    if (!ntdll)
+        throw std::runtime_error("Could not find ntdll");
+
+    using SetInformationThreadT = NTSTATUS(*)(HANDLE, THREADINFOCLASS, PVOID,
+        ULONG);
+
+    auto const orig = reinterpret_cast<SetInformationThreadT>(
+        ::GetProcAddress(ntdll, "NtSetInformationThread"));
+
+    if (!orig)
+        throw std::runtime_error(
+            "Could not find ntdll!NtSetInformationThread");
+
+    auto const set_information_thread_detour = new hadesmem::PatchDetour<
+        SetInformationThreadT>(process, orig,
+            [](hadesmem::PatchDetourBase *detour, HANDLE thread_handle,
+                THREADINFOCLASS info_class, PVOID thread_info,
+                ULONG info_length)
+        {
+            static constexpr THREADINFOCLASS ThreadHideFromDebugger =
+                static_cast<THREADINFOCLASS>(0x11);
+
+            if (info_class == ThreadHideFromDebugger && !thread_info &&
+                !info_length)
+                return static_cast<NTSTATUS>(0);
+
+            return detour->GetTrampolineT<SetInformationThreadT>()(
+                thread_handle, info_class, thread_info, info_length);
+        });
+
+    set_information_thread_detour->Apply();
 }
