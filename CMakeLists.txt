@@ -29,20 +29,17 @@ endif()
 # threading library is required
 find_package(Threads REQUIRED)
 
-# currently there is a bug in the cmake included with visual studio where the wrong
-# version number is resolved for the compiler.  this should work around it.
-# FIXME: this should be removable once visual studio begins using cmake 3.8
-if (MSVC)
-	if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 19.10)
-        set(Boost_COMPILER -vc141)
-    endif()
-endif()
-
 set(Boost_USE_STATIC_LIBS ON)
 set(Boost_USE_MULTITHREADED ON)
 set(Boost_USE_STATIC_RUNTIME OFF)
 
-find_package(boost)
+find_package(Boost)
+
+if (BOOST_FOUND)
+    message(STATUS "boost found at ${BOOST_ROOT}")
+else()
+    message(FATAL_ERROR "boost not found")
+endif()
 
 if (NOT EXISTS "${HADESMEM_ROOT}/include/memory/hadesmem")
     message(FATAL_ERROR "hadesmem not found at ${HADESMEM_ROOT}")
