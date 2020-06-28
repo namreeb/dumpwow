@@ -45,8 +45,7 @@ Log::Log(std::function<void(const std::string &)> callback)
 
 std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str)
 {
-    const std::string s_narrow(_Str.begin(), _Str.end());
-    return _Ostr << s_narrow;
+    return _Ostr << wstring_to_string(_Str);
 }
 
 Log gLog([] (const std::string &buff)

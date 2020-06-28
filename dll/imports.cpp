@@ -29,6 +29,7 @@
 
 #include <hadesmem/process.hpp>
 #include <hadesmem/region.hpp>
+#include <hadesmem/module_list.hpp>
 #include <hadesmem/pelib/section.hpp>
 #include <hadesmem/pelib/section_list.hpp>
 #include <hadesmem/pelib/export_list.hpp>
@@ -40,6 +41,7 @@
 #include <Windows.h>
 
 #include <vector>
+#include <unordered_map>
 
 namespace
 {
@@ -80,8 +82,7 @@ class ImportTable
 
         std::uint64_t write(const std::wstring &str)
         {
-            std::string narrow_str(str.begin(), str.end());
-            return write(narrow_str);
+            return write(wstring_to_string(str));
         }
 
         template <typename T>
@@ -121,14 +122,25 @@ class ImportTable
             const hadesmem::Region region(_process, function);
             const hadesmem::Module module(_process,
                 reinterpret_cast<HMODULE>(region.GetAllocBase()));
-            auto const mod_name_wide = module.GetName();
-            const std::string mod_name(mod_name_wide.begin(),
-                mod_name_wide.end());
+            auto const mod_name = wstring_to_string(module.GetName());
 
-            // if the import dir for this module is already present, return it
-            for (auto &import_dir : _import_dirs)
+            // if this function belongs to the same library as the last one,
+            // return the last import directory
+            if (!_import_dirs.empty() && _import_dirs.back().name == mod_name)
+                return _import_dirs.back();
+
+            // if the import directory for this library exists anywhere else,
+            // it means we have made a mistake somewhere along the way.
+            for (auto& import_dir : _import_dirs)
                 if (mod_name == import_dir.name)
-                    return import_dir;
+                {
+                    gLog << "Import directory for 0x" << std::hex
+                        << reinterpret_cast<std::uintptr_t>(function)
+                        << " module \"" << mod_name
+                        << "\" has already been finalized" << std::endl;
+                    throw std::runtime_error(
+                        "Import directory ordering failure");
+                }
 
             // create a new empty import directory for this module
             IMAGE_IMPORT_DESCRIPTOR imp_dir;
@@ -147,38 +159,9 @@ class ImportTable
             _process(::GetCurrentProcessId()), _pe_file(pe_file),
             _new_section_va(new_section_va), _iat_va(iat_va), _finalized(false)
         {
-            //hadesmem::ImportDirList import_dir_list(_process, pe_file);
-
-            // populate data for all existing import directories
-            //for (auto const &import_dir : import_dir_list)
-            //{
-            //    IMAGE_IMPORT_DESCRIPTOR import_dir_data;
-            //    ::memcpy(&import_dir_data, import_dir.GetBase(),
-            //        sizeof(import_dir_data));
-
-            //    import_dir_data.FirstThunk = 0;
-
-            //    hadesmem::ImportThunkList import_thunk_list(_process, pe_file,
-            //        import_dir.GetFirstThunk());
-
-            //    auto current_thunk = import_dir.GetFirstThunk();
-
-            //    // for this import directory, add each existing thunk
-            //    for (auto &thunk : import_thunk_list)
-            //    {
-            //        add_function(current_thunk,
-            //            reinterpret_cast<PVOID>(thunk.GetFunction()));
-
-            //        current_thunk += sizeof(IMAGE_THUNK_DATA64);
-            //    }
-
-            //    _import_dirs.emplace_back(import_dir_data,
-            //        import_dir.GetName());
-            //}
         }
 
-        // rva specifices the rva of the thunk
-        // function points to the function itself
+        // TODO: shorten this function and reduce code duplication
         void add_function(PVOID thunk, PVOID function)
         {
             if (_finalized)
@@ -192,33 +175,105 @@ class ImportTable
                 reinterpret_cast<HMODULE>(region.GetAllocBase()));
             const hadesmem::ExportList export_list(_process, mod_pe);
 
-            auto const rva = static_cast<DWORD>(
+            auto const mod_name = wstring_to_string(module.GetName());
+
+            auto const thunk_rva = static_cast<DWORD>(
                 reinterpret_cast<std::uintptr_t>(thunk) -
                 reinterpret_cast<std::uintptr_t>(_pe_file.GetBase()));
 
-            for (auto const &e : export_list)
+            IMAGE_THUNK_DATA64 thunk_data;
+            ::memset(&thunk_data, 0, sizeof(thunk_data));
+
+            // if we are currently building the thunks for a different module,
+            // it could be because that module has a forward to this function
+            if (!_import_dirs.empty() && _import_dirs.back().name != mod_name)
+            {
+                // in this case, check the module we've been building to see if
+                // there is a forwarder to this function
+                auto const current_module = _import_dirs.back().name;
+                auto const current_module_handle = ::GetModuleHandleA(
+                    current_module.c_str());
+
+                if (!current_module_handle)
+                    throw std::runtime_error("GetModuleHandle() failed");
+
+                const hadesmem::PeFile current_module_pe(_process,
+                    current_module_handle, hadesmem::PeFileType::kImage, 0);
+                const hadesmem::ExportList current_module_export_list(_process,
+                    current_module_pe);
+
+                for (auto const& exp : current_module_export_list)
+                {
+                    if (!exp.IsForwarded())
+                        continue;
+
+                    if (exp.IsForwardedByOrdinal())
+                    {
+                        auto const target = ::GetProcAddress(module.GetHandle(),
+                            reinterpret_cast<LPCSTR>(exp.GetForwarderOrdinal()));
+
+                        if (target != function)
+                            continue;
+
+                        thunk_data.u1.Ordinal = IMAGE_ORDINAL_FLAG |
+                            (exp.GetOrdinalNumber() & static_cast<WORD>(-1));
+
+                        gLog << "Thunk RVA: +0x" << std::hex << thunk_rva
+                            << " -> " << current_module << "!" << exp.GetName()
+                            << " <ordinal " << std::dec
+                            << exp.GetForwarderOrdinal()
+                            << "> (ordinal forward)" << std::endl;
+
+                        _import_dirs.back().thunks.push_back(thunk_data);
+                        ::memcpy(thunk, &thunk_data, sizeof(thunk_data));
+
+                        return;
+                    }
+                    else
+                    {
+                        auto const target = ::GetProcAddress(
+                            module.GetHandle(),
+                            exp.GetForwarderFunction().c_str());
+
+                        if (target != function)
+                            continue;
+
+                        // TODO: Make actual hint
+                        thunk_data.u1.AddressOfData = static_cast<ULONGLONG>(
+                            write(static_cast<WORD>(0xFEED)));
+                        write(exp.GetName());
+                        if ((thunk_data.u1.AddressOfData +
+                            exp.GetName().length() + 1) % 2 != 0)
+                            write<std::uint8_t>(0);
+
+                        gLog << "Thunk RVA: +0x" << std::hex << thunk_rva
+                            << " -> " << current_module << "!" << exp.GetName()
+                            << " (name forward)" << std::endl;
+
+                        _import_dirs.back().thunks.push_back(thunk_data);
+                        ::memcpy(thunk, &thunk_data, sizeof(thunk_data));
+
+                        return;
+                    }
+                }
+            }
+
+            // if we reach here the possibility of a forward has been handled
+
+            auto& import_dir = get_import_dir(function);
+
+            for (auto const& e : export_list)
                 if (e.GetVa() == function)
                 {
-                    auto &import_dir = get_import_dir(function);
-
-                    gLog << "Function: +0x" << std::hex << rva << " -> "
-                        << module.GetName() << "!" << e.GetName() << std::endl;
-
                     // if this import directory was just created, set the
                     // first thunk based on this function
                     if (import_dir.header.FirstThunk == 0)
-                        import_dir.header.FirstThunk = rva;
+                        import_dir.header.FirstThunk = thunk_rva;
 
                     // hint is WORD value of index into the export name
                     // pointer table
-                    // TODO: Actually look this up!
-                    const WORD export_name_ordinal = (
-                        import_dir.thunks.size() % 2) ? 0xFACE: 0xFEED;
-
-                    IMAGE_THUNK_DATA64 thunk_data;
-
                     thunk_data.u1.AddressOfData = static_cast<ULONGLONG>(
-                        write<WORD>(export_name_ordinal));
+                        write(static_cast<WORD>(0xFACE)));
                     write(e.GetName());
 
                     // the above data must align to an even boundary.  if not,
@@ -227,15 +282,16 @@ class ImportTable
                         % 2 != 0)
                         write<std::uint8_t>(0);
 
-                    import_dir.thunks.push_back(thunk_data);
+                    gLog << "Thunk RVA: +0x" << std::hex << thunk_rva << " -> "
+                        << module.GetName() << "!" << e.GetName() << std::endl;
 
+                    import_dir.thunks.push_back(thunk_data);
                     ::memcpy(thunk, &thunk_data, sizeof(thunk_data));
 
                     return;
                 }
 
-            throw std::runtime_error(
-                "Non-export function given to import table");
+            throw std::runtime_error("Failed to create thunk");
         }
 
         void finalize(hadesmem::Section &new_section,
@@ -244,25 +300,23 @@ class ImportTable
             if (_finalized)
                 throw std::runtime_error("Cannot finalize import table twice");
 
+            IMAGE_THUNK_DATA64 empty_thunk_data;
+            ::memset(&empty_thunk_data, 0, sizeof(empty_thunk_data));
+
             // first, write thunks and update headers for each import directory
-            DWORD iat_dir_size = 0;
             for (auto &import_dir : _import_dirs)
             {
+                // RVA of import lookup table (ILT)
+                import_dir.header.OriginalFirstThunk = _new_section_va +
+                    static_cast<DWORD>(_buffer.size());
+
+                write(import_dir.thunks);
+
                 // terminate the list of thunks
-                IMAGE_THUNK_DATA64 empty_thunk_data;
-                ::memset(&empty_thunk_data, 0, sizeof(empty_thunk_data));
                 write(empty_thunk_data);
-
-                auto const thunks_rva = static_cast<DWORD>(
-                    write(import_dir.thunks));
-
-                iat_dir_size += static_cast<DWORD>(import_dir.thunks.size() *
-                    sizeof(IMAGE_THUNK_DATA64));
-
-                import_dir.header.OriginalFirstThunk = thunks_rva;
             }
 
-            // second, write the import dirs
+            // second, write the import directory entries
             auto const import_dir_rva = static_cast<DWORD>(_buffer.size());
             for (auto &import_dir : _import_dirs)
                 auto const dir_rva = static_cast<DWORD>(
@@ -286,10 +340,11 @@ class ImportTable
             nt_header.SetDataDirectorySize(hadesmem::PeDataDir::Import,
                 static_cast<DWORD>(_import_dirs.size() * 
                     sizeof(IMAGE_IMPORT_DESCRIPTOR)));
+
             nt_header.SetDataDirectoryVirtualAddress(hadesmem::PeDataDir::IAT,
                 _iat_va);
             nt_header.SetDataDirectorySize(hadesmem::PeDataDir::IAT,
-                iat_dir_size);
+                import_dir_rva);
 
             nt_header.UpdateWrite();
 

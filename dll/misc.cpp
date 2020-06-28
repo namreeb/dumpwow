@@ -64,3 +64,8 @@ DWORD round_up(DWORD numToRound, DWORD multiple)
     assert(multiple > 0);
     return ((numToRound + multiple - 1) / multiple) * multiple;
 }
+
+std::string wstring_to_string(const std::wstring& str)
+{
+    return std::move(std::string(str.begin(), str.end()));
+}
