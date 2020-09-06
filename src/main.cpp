@@ -53,6 +53,7 @@
 
 namespace fs = std::experimental::filesystem;
 
+fs::path get_temp_filename(const fs::path& path);
 bool launch_wow_suspended(const fs::path &path,
     PROCESS_INFORMATION &proc_info);
 hadesmem::PeFile find_wow_pe(const hadesmem::Process &process);
@@ -266,14 +267,48 @@ bool FindVEHCallerRVA()
 bool launch_wow_suspended(const fs::path &path,
     PROCESS_INFORMATION &proc_info)
 {
+    // disable ASLR for subprocesses.  this will cause the base address used
+    // in memory to match the base address that static analysis tools will use
+    SIZE_T cb;
+    if (!::InitializeProcThreadAttributeList(nullptr, 1, 0, &cb) &&
+        ::GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        return false;
+
+    auto attribs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(malloc(cb));
+
+    if (!attribs)
+        return false;
+
+    if (!::InitializeProcThreadAttributeList(attribs, 1, 0, &cb))
+    {
+        free(attribs);
+        return false;
+    }
+
+    DWORD64 attribute =
+        PROCESS_CREATION_MITIGATION_POLICY_FORCE_RELOCATE_IMAGES_ALWAYS_OFF;
+    if (!::UpdateProcThreadAttribute(attribs, 0,
+        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &attribute, sizeof(DWORD64),
+        nullptr, nullptr))
+    {
+        free(attribs);
+        return false;
+    }
+
     // launch wow in a suspended state
     STARTUPINFO start_info {};
     start_info.cb = static_cast<DWORD>(sizeof(start_info));
     memset(&proc_info, 0, sizeof(proc_info));
 
-    return !!::CreateProcessW(path.wstring().c_str(), nullptr, nullptr,
+    wchar_t path_raw[MAX_PATH];
+    memcpy(&path_raw[0], path.wstring().c_str(),
+        (1 + path.wstring().length()) * sizeof(wchar_t));
+
+    auto const result = !!::CreateProcessW(path_raw, nullptr, nullptr,
         nullptr, FALSE, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
         nullptr, nullptr, &start_info, &proc_info);
+
+    return result;
 }
 
 hadesmem::PeFile find_wow_pe(const hadesmem::Process &process)
