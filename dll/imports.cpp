@@ -162,7 +162,7 @@ class ImportTable
         }
 
         // TODO: shorten this function and reduce code duplication
-        void add_function(PVOID thunk, PVOID function)
+        void add_function(PVOID thunk, PVOID function, bool force_new_dir)
         {
             if (_finalized)
                 throw std::runtime_error(
@@ -186,7 +186,8 @@ class ImportTable
 
             // if we are currently building the thunks for a different module,
             // it could be because that module has a forward to this function
-            if (!_import_dirs.empty() && _import_dirs.back().name != mod_name)
+            if (!force_new_dir && !_import_dirs.empty() &&
+                _import_dirs.back().name != mod_name)
             {
                 // in this case, check the module we've been building to see if
                 // there is a forwarder to this function
@@ -215,12 +216,16 @@ class ImportTable
                         if (target != function)
                             continue;
 
-                        thunk_data.u1.Ordinal = IMAGE_ORDINAL_FLAG |
-                            (exp.GetOrdinalNumber() & static_cast<WORD>(-1));
+                        thunk_data.u1.AddressOfData = static_cast<ULONGLONG>(
+                            write(static_cast<WORD>(0xFACE)));
+                        write(exp.GetName());
+                        if ((thunk_data.u1.AddressOfData +
+                            exp.GetName().length() + 1) % 2 != 0)
+                            write<std::uint8_t>(0);
 
                         gLog << "Thunk RVA: +0x" << std::hex << thunk_rva
                             << " -> " << current_module << "!" << exp.GetName()
-                            << " <ordinal " << std::dec
+                            << " <ordinal 0x" << std::hex
                             << exp.GetForwarderOrdinal()
                             << "> (ordinal forward)" << std::endl;
 
@@ -412,6 +417,10 @@ void rebuild_imports(const hadesmem::Process &process,
         reinterpret_cast<std::uintptr_t>(import_region.GetBase()) +
         import_region.GetSize());
 
+    // when true, the next function will force creation of a new import
+    // directory
+    auto force_new_import_dir = true;
+
     // step two, iterate over .rdata section and decrypt encrypted trampolines
     for (auto current_import =
         reinterpret_cast<PVOID *>(rdata);
@@ -420,15 +429,38 @@ void rebuild_imports(const hadesmem::Process &process,
     {
         auto const thunk_ea = *current_import;
 
+        auto const rva_tmp = static_cast<DWORD>(
+            reinterpret_cast<std::uintptr_t>(current_import) -
+            reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
+
+        // Thunk RVA: +0x1b8f2f0->GDI32.dll!BitBlt
+        // Thunk RVA: +0x1b8f300->GDI32.dll!D3DKMTAcquireKeyedMutex2 <ordinal 0x4a>(ordinal forward)
+        auto const log = rva_tmp >= 0x1b8f2f0 && rva_tmp <= 0x1b8f320;
+
+        if (log)
+            gLog << "RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
+                << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
+                << std::endl;
+
         if (!thunk_ea)
+        {
+            force_new_import_dir = true;
             continue;
+        }
 
         // if the thunk ea is not sane, skip it.  this heuristic is not
         // necessary but greatly speeds up the process.  without it, each
         // of these addresses would be examined and result in an exception
         // when hadesmem calls VirtualQueryEx() and it fails.
         if (reinterpret_cast<std::uint64_t>(thunk_ea) >> 0x30)
+        {
+            if (rva_tmp <= 0x1c00000)
+                gLog << "Bad thunk ea RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
+                    << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
+                    << std::endl;
+
             continue;
+        }
 
         try
         {
@@ -459,11 +491,21 @@ void rebuild_imports(const hadesmem::Process &process,
             ConclicThreadContext ctx;
 
             if (!conclic_begin(thunk_ea, ctx))
+            {
+#ifdef _DEBUG
+                gLog << "concolic failed RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
+                    << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
+                    << std::endl;
+#endif
                 continue;
+            }
 
             // the ImportTable class will build import directory entries as
             // needed for eventual serialization
-            import_table.add_function(current_import, reinterpret_cast<PVOID>(ctx.rax));
+            import_table.add_function(current_import,
+                reinterpret_cast<PVOID>(ctx.rax), force_new_import_dir);
+
+            force_new_import_dir = false;
         }
         catch (const std::exception &)
         {
