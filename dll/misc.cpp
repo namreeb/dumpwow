@@ -65,7 +65,11 @@ DWORD round_up(DWORD numToRound, DWORD multiple)
     return ((numToRound + multiple - 1) / multiple) * multiple;
 }
 
+// taken from https://stackoverflow.com/a/18374698
 std::string wstring_to_string(const std::wstring& str)
 {
-    return std::move(std::string(str.begin(), str.end()));
+    using convert_typeX = std::codecvt_utf8<wchar_t>;
+    std::wstring_convert<convert_typeX, wchar_t> converterX;
+
+    return converterX.to_bytes(str);
 }
