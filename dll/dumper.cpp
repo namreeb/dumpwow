@@ -139,9 +139,11 @@ PVOID find_remapped_base(const hadesmem::Process& process, PVOID base)
         if (memcmp(base, region.GetBase(), region.GetSize()))
             continue;
 
-        //gLog << "Remapped base:\t0x" << std::hex << region.GetBase()
-        //    << " protection: 0x" << region.GetProtect()
-        //    << " size: 0x" << region.GetSize() << std::endl;
+#ifdef _DEBUG
+        gLog << "Remapped base:\t\t0x" << std::hex << region.GetBase()
+            << " protection: 0x" << region.GetProtect()
+            << " size: 0x" << region.GetSize() << std::endl;
+#endif
 
         return region.GetBase();
     }
