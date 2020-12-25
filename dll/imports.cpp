@@ -138,6 +138,7 @@ class ImportTable
                         << reinterpret_cast<std::uintptr_t>(function)
                         << " module \"" << mod_name
                         << "\" has already been finalized" << std::endl;
+                    gLog << " alloc base: " << region.GetAllocBase() << std::endl;
                     throw std::runtime_error(
                         "Import directory ordering failure");
                 }
@@ -429,18 +430,18 @@ void rebuild_imports(const hadesmem::Process &process,
     {
         auto const thunk_ea = *current_import;
 
-        auto const rva_tmp = static_cast<DWORD>(
+        auto const import_rva = static_cast<DWORD>(
             reinterpret_cast<std::uintptr_t>(current_import) -
             reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
+        auto const thunk_rva = static_cast<DWORD>(
+            reinterpret_cast<std::uintptr_t>(thunk_ea) -
+            reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
 
-        // Thunk RVA: +0x1b8f2f0->GDI32.dll!BitBlt
-        // Thunk RVA: +0x1b8f300->GDI32.dll!D3DKMTAcquireKeyedMutex2 <ordinal 0x4a>(ordinal forward)
-        auto const log = rva_tmp >= 0x1b8f2f0 && rva_tmp <= 0x1b8f320;
-
-        if (log)
-            gLog << "RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
-                << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
-                << std::endl;
+#ifdef _DEBUG
+        gLog << "Import RVA: +0x" << std::hex << import_rva << " Thunk EA: 0x"
+            << reinterpret_cast<std::uintptr_t>(thunk_ea) << " Thunk RVA: +0x"
+            << thunk_rva << std::endl;
+#endif
 
         if (!thunk_ea)
         {
@@ -454,10 +455,9 @@ void rebuild_imports(const hadesmem::Process &process,
         // when hadesmem calls VirtualQueryEx() and it fails.
         if (reinterpret_cast<std::uint64_t>(thunk_ea) >> 0x30)
         {
-            if (rva_tmp <= 0x1c00000)
-                gLog << "Bad thunk ea RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
-                    << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
-                    << std::endl;
+            gLog << "Bad thunk ea RVA: 0x" << std::hex << import_rva << " thunk_ea: 0x"
+                << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
+                << std::endl;
 
             continue;
         }
@@ -493,7 +493,7 @@ void rebuild_imports(const hadesmem::Process &process,
             if (!conclic_begin(thunk_ea, ctx))
             {
 #ifdef _DEBUG
-                gLog << "concolic failed RVA: 0x" << std::hex << rva_tmp << " thunk_ea: 0x"
+                gLog << "concolic failed RVA: 0x" << std::hex << import_rva << " thunk_ea: 0x"
                     << std::hex << reinterpret_cast<std::uintptr_t>(thunk_ea)
                     << std::endl;
 #endif
@@ -507,9 +507,12 @@ void rebuild_imports(const hadesmem::Process &process,
 
             force_new_import_dir = false;
         }
-        catch (const std::exception &)
+        catch (const std::exception &e)
         {
-            continue;
+#ifdef _DEBUG
+            gLog << "Exception: " << boost::diagnostic_information(e) << std::endl;
+#endif
+            break;
         }
     }
 
