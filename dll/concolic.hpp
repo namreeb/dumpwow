@@ -31,6 +31,7 @@
 struct ConclicThreadContext
 {
     std::uint64_t rax;
+    std::uint64_t r10;
 };
 
 bool conclic_begin(PVOID start, ConclicThreadContext &context);
