@@ -17,13 +17,29 @@ set(PROJECT_NAME dumpwow)
 
 project(${PROJECT_NAME})
 
-if ("x_${HADESMEM_ROOT}" STREQUAL "x_")
-    message(FATAL_ERROR "HADESMEM_ROOT not set.  ${PROJECT_NAME} requires hadesmem, available at https://bitbucket.org/raptorfactor/hadesmem")
-endif()
-
 # build in Release-mode by default if not explicitly set
 if( NOT CMAKE_BUILD_TYPE )
   set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+endif()
+
+if ("x_${CMAKE_BUILD_TYPE}" STREQUAL "x_Debug")
+    set(HADESMEM_BUILD "Debug")
+else()
+    set(HADESMEM_BUILD "Release")
+endif()
+
+if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(HADESMEM_ARCH "x64")
+else()
+    set(HADESMEM_ARCH "Win32")
+endif()
+
+if ("x_${HADESMEM_ROOT}" STREQUAL "x_" AND EXISTS "${CMAKE_SOURCE_DIR}/hadesmem-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
+    set(HADESMEM_ROOT "${CMAKE_SOURCE_DIR}/hadesmem-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
+endif()
+
+if ("x_${HADESMEM_ROOT}" STREQUAL "x_")
+    message(FATAL_ERROR "HADESMEM_ROOT not set.  ${PROJECT_NAME} requires hadesmem, available at https://github.com/namreeb/hadesmem")
 endif()
 
 # threading library is required
@@ -45,18 +61,6 @@ if (NOT EXISTS "${HADESMEM_ROOT}/include/memory/hadesmem")
     message(FATAL_ERROR "hadesmem not found at ${HADESMEM_ROOT}")
 else()
     message(STATUS "hadesmem found at ${HADESMEM_ROOT}")
-endif()
-
-if ("x_${CMAKE_BUILD_TYPE}" STREQUAL "x_Debug")
-    set(HADESMEM_BUILD "Debug")
-else()
-    set(HADESMEM_BUILD "Release")
-endif()
-
-if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(HADESMEM_ARCH "x64")
-else()
-    set(HADESMEM_ARCH "Win32")
 endif()
 
 set(HADESMEM_LIB_DIR "${HADESMEM_ROOT}\\build\\vs\\${HADESMEM_BUILD}\\${HADESMEM_ARCH}")
