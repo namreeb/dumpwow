@@ -34,13 +34,24 @@ else()
     set(HADESMEM_ARCH "Win32")
 endif()
 
-if ("x_${HADESMEM_ROOT}" STREQUAL "x_" AND EXISTS "${CMAKE_SOURCE_DIR}/hadesmem-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
-    set(HADESMEM_ROOT "${CMAKE_SOURCE_DIR}/hadesmem-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
+if ("x_${HADESMEM_ROOT}" STREQUAL "x_")
+    if (EXISTS "${CMAKE_SOURCE_DIR}/hadesmem-${CMAKE_VS_PLATFORM_TOOLSET}-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
+        set(HADESMEM_ROOT "${CMAKE_SOURCE_DIR}/hadesmem-${CMAKE_VS_PLATFORM_TOOLSET}-${HADESMEM_BUILD}-${HADESMEM_ARCH}")
+        set(HADESMEM_LIB_DIR "${HADESMEM_ROOT}/lib")
+    else()
+        message(FATAL_ERROR "HADESMEM_ROOT not set.  ${PROJECT_NAME} requires hadesmem, available at https://github.com/namreeb/hadesmem")
+    endif()
+else()
+    set(HADESMEM_LIB_DIR "${HADESMEM_ROOT}/build/vs/${HADESMEM_BUILD}/${HADESMEM_ARCH}")
 endif()
 
-if ("x_${HADESMEM_ROOT}" STREQUAL "x_")
-    message(FATAL_ERROR "HADESMEM_ROOT not set.  ${PROJECT_NAME} requires hadesmem, available at https://github.com/namreeb/hadesmem")
+if (NOT EXISTS "${HADESMEM_ROOT}/include/memory/hadesmem")
+    message(FATAL_ERROR "hadesmem not found at ${HADESMEM_ROOT}")
+else()
+    message(STATUS "hadesmem found at ${HADESMEM_ROOT}")
 endif()
+
+message(STATUS "hadesmem library directory: ${HADESMEM_LIB_DIR}")
 
 # threading library is required
 find_package(Threads REQUIRED)
@@ -57,17 +68,9 @@ else()
     message(FATAL_ERROR "boost not found")
 endif()
 
-if (NOT EXISTS "${HADESMEM_ROOT}/include/memory/hadesmem")
-    message(FATAL_ERROR "hadesmem not found at ${HADESMEM_ROOT}")
-else()
-    message(STATUS "hadesmem found at ${HADESMEM_ROOT}")
-endif()
-
-set(HADESMEM_LIB_DIR "${HADESMEM_ROOT}\\build\\vs\\${HADESMEM_BUILD}\\${HADESMEM_ARCH}")
-message(STATUS "hadesmem library directory: ${HADESMEM_LIB_DIR}")
-
 add_definitions(-DUNICODE -D_UNICODE -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DASMJIT_STATIC -DASMJIT_BUILD_X86 -DPUGIXML_WCHAR_MODE)
-include_directories(Include
+include_directories(
+    "Include"
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${Boost_INCLUDE_DIR}"
     "${HADESMEM_ROOT}/include/memory/"
