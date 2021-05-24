@@ -68,7 +68,7 @@ else()
     message(FATAL_ERROR "boost not found")
 endif()
 
-add_definitions(-DUNICODE -D_UNICODE -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DASMJIT_STATIC -DASMJIT_BUILD_X86 -DPUGIXML_WCHAR_MODE)
+add_definitions(-DUNICODE -D_UNICODE -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -DASMJIT_STATIC -DASMJIT_BUILD_X86 -DHADESMEM_NO_PUGIXML)
 include_directories(
     "Include"
     "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -76,7 +76,6 @@ include_directories(
     "${HADESMEM_ROOT}/include/memory/"
     "${HADESMEM_ROOT}/deps/udis86/udis86"
     "${HADESMEM_ROOT}/deps/asmjit/asmjit/src"
-    "${HADESMEM_ROOT}/deps/pugixml/pugixml/src"
 )
 
 link_directories("${HADESMEM_LIB_DIR}")
