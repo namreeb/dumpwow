@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.2.3)
+cmake_minimum_required(VERSION 3.12)
 
 foreach(policy
     CMP0074 # CMake 3.12
