@@ -20,7 +20,7 @@ jobs:
       uses: dawidd6/action-download-artifact@v2.14.0
       with:
         workflow: msbuild.yml
-        repo: https://github.com/namreeb/hadesmem
+        repo: namreeb/hadesmem
 
     - name: Show files
       run: dir
