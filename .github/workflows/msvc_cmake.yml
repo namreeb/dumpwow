@@ -28,9 +28,6 @@ jobs:
       run: |
         Invoke-WebRequest https://boostorg.jfrog.io/artifactory/main/release/1.73.0/source/boost_1_73_0.zip -OutFile boost.zip
         Expand-Archive -Path boost.zip -DestinationPath .
-        
-    - name: Show files
-      run: dir
 
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DBOOST_ROOT=boost_1_73_0 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_INSTALL_PREFIX=${{github.workspace}}/artifact
