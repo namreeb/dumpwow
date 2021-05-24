@@ -5,8 +5,6 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-  schedule:
-    - cron:  '0 0 * * 0'
 
 env:
   BUILD_TYPE: Release
@@ -42,4 +40,4 @@ jobs:
       with:	
         name: dumpwow
         path: ${{ github.workspace }}/artifact/**/*
-        retention-days: 8
+
