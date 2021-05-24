@@ -5,9 +5,10 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  schedule:
+    - cron:  '0 0 * * 0'
 
 env:
-  VC_TOOLSET: v140
   BUILD_TYPE: Release
 
 jobs:
@@ -38,3 +39,10 @@ jobs:
       run: |
         cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
         cmake --install ${{github.workspace}}/build
+
+    - name: Publish artifact
+      uses: actions/upload-artifact@v2
+      with:	
+        name: dumpwow
+        path: ${{ github.workspace }}/artifact/**/*
+        retention-days: 8
