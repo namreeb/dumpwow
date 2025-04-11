@@ -59,7 +59,7 @@ extern "C" __declspec(dllexport) void Initialize(
         HookCallTLSCallbacks(process, call_tls_initializers_rva,
             main_thread_id);
         HookBaseThreadInitThunk(process, main_thread_id, wow_base, wow_size);
-        HookSetInformationThread(process);
+        //HookSetInformationThread(process);
     }
     catch (const std::exception &e)
     {
@@ -127,8 +127,8 @@ std::uint64_t BaseThreadInitThunkHook(hadesmem::PatchDetourBase *detour,
             nt_header.GetAddressOfEntryPoint());
 
         if (func != entry_point)
-            return detour->GetTrampolineT<BaseThreadInitThunkT>()(a1, func,
-                a3);
+            throw std::runtime_error(
+                "Thread init called something other than entry point");
 
         if (*reinterpret_cast<std::uint8_t *>(entry_point) != 0xE9)
             throw std::runtime_error(
