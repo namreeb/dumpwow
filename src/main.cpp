@@ -53,7 +53,6 @@
 
 namespace fs = std::experimental::filesystem;
 
-fs::path get_temp_filename(const fs::path& path);
 bool launch_wow_suspended(const fs::path &path,
     PROCESS_INFORMATION &proc_info);
 hadesmem::PeFile find_wow_pe(const hadesmem::Process &process);
@@ -94,6 +93,7 @@ int main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
+        std::cout << "Wow PID:                " << proc_info.dwProcessId << std::endl;
         g_exit_wow = false;
       
         const hadesmem::Process process(proc_info.dwProcessId);
@@ -247,6 +247,9 @@ bool FindVEHCallerRVA()
     // first, add our own VEH
     auto const veh_handle = ::AddVectoredExceptionHandler(CALL_FIRST,
         &VectoredExceptionHandler);
+
+    if (!veh_handle)
+        return false;
 
     // second, raise an exception
     ::RaiseException(1, 0, 0, nullptr);
