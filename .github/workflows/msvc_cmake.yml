@@ -16,12 +16,10 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - name: Download hadesmem artifact
-      uses: dawidd6/action-download-artifact@v9
-      with:
-        workflow: msbuild.yml
-        repo: namreeb/hadesmem
-        allow_forks: false
+    - name: Download latest hadesmem release
+      run: |
+        Invoke-WebRequest https://github.com/namreeb/hadesmem/releases/download/latest/hadesmem-v142-Release-x64.zip -OutFile hadesmem.zip
+        Expand-Archive -Path hadesmem.zip -DestinationPath .
 
     - name: Download Boost
       run: |
