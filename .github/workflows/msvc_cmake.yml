@@ -37,7 +37,7 @@ jobs:
         cmake --install ${{github.workspace}}/build
 
     - name: Publish artifact
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:	
         name: dumpwow
         path: ${{ github.workspace }}/artifact/**/*
