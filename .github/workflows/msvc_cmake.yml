@@ -16,9 +16,9 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - name: Download latest hadesmem release
+    - name: Download hadesmem v1.7.0 release zip
       run: |
-        Invoke-WebRequest https://github.com/namreeb/hadesmem/releases/download/latest/hadesmem-v142-Release-x64.zip -OutFile hadesmem.zip
+        Invoke-WebRequest https://github.com/namreeb/hadesmem/releases/download/v1.7.0/hadesmem-v142-Release-x64.zip -OutFile hadesmem.zip
         Expand-Archive -Path hadesmem.zip -DestinationPath .
 
     - name: Download Boost
