@@ -17,10 +17,11 @@ jobs:
     - uses: actions/checkout@v2
 
     - name: Download hadesmem artifact
-      uses: dawidd6/action-download-artifact@v2.14.0
+      uses: dawidd6/action-download-artifact@v9
       with:
         workflow: msbuild.yml
         repo: namreeb/hadesmem
+        allow_forks: false
 
     - name: Download Boost
       run: |
