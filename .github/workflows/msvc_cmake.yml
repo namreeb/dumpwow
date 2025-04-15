@@ -20,7 +20,7 @@ jobs:
       run: |
         Invoke-WebRequest https://github.com/namreeb/hadesmem/releases/download/v1.7.1/hadesmem-v143-Release-x64.zip -OutFile hadesmem.zip
         Expand-Archive -Path hadesmem.zip -DestinationPath .
-        dir
+        del hadesmem.zip
 
     - name: Download Boost
       run: |
