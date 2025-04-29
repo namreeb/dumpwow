@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -32,8 +32,9 @@ class RaiiProc
 private:
     const DWORD _pid;
     const UINT _exit_code;
+
 public:
-    RaiiProc(DWORD pid, UINT exit_code=0) : _pid(pid), _exit_code(exit_code) {}
+    RaiiProc(DWORD pid, UINT exit_code = 0) : _pid(pid), _exit_code(exit_code) {}
     ~RaiiProc()
     {
         auto const proc = ::OpenProcess(PROCESS_TERMINATE, FALSE, _pid);

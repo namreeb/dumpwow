@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -23,16 +23,18 @@
 */
 
 #include "relocations.hpp"
+
 #include "misc.hpp"
 
-void fix_relocation(PVOID image_base)
+void apply_relocations(PVOID image_base)
 {
     const auto module = PIMAGE_DOS_HEADER(image_base);
-    auto headers = PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) +
-        module->e_lfanew);
-    auto relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(module) +
+    auto headers =
+        PIMAGE_NT_HEADERS64(reinterpret_cast<char*>(module) + module->e_lfanew);
+    auto relocation = PIMAGE_BASE_RELOCATION(
+        reinterpret_cast<char*>(module) +
         headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
-        .VirtualAddress);
+            .VirtualAddress);
 
     while (relocation->SizeOfBlock && relocation->VirtualAddress)
     {
@@ -40,34 +42,38 @@ void fix_relocation(PVOID image_base)
             (relocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
             sizeof(WORD);
         const auto block_entries = PWORD(reinterpret_cast<char*>(relocation) +
-            sizeof(IMAGE_BASE_RELOCATION));
+                                         sizeof(IMAGE_BASE_RELOCATION));
 
         for (size_t i = 0; i < block_relocation_count; i++)
         {
             switch (block_entries[i] >> 12)
             {
-            case IMAGE_REL_BASED_DIR64:
-            {
-                const auto p = reinterpret_cast<uintptr_t*>(
-                    reinterpret_cast<char*>(module) +
-                    relocation->VirtualAddress + (block_entries[i] & 0xFFF));
-                *p = rebase(reinterpret_cast<PVOID>(headers->OptionalHeader.ImageBase), *p);
-            }
-            break;
-            case IMAGE_REL_BASED_ABSOLUTE:
-            case IMAGE_REL_BASED_HIGHLOW:
-            case IMAGE_REL_BASED_HIGH:
-            case IMAGE_REL_BASED_LOW:
-            default:
-            {
-                // No need to fix absolute relocation it's just a dummy for alignment.
-                // Other relocation types are not used in 64bit binaries.
-            }
-            break;
+                case IMAGE_REL_BASED_DIR64:
+                {
+                    const auto p = reinterpret_cast<uintptr_t*>(
+                        reinterpret_cast<char*>(module) +
+                        relocation->VirtualAddress + (block_entries[i] & 0xFFF));
+
+                    *p = rebase(reinterpret_cast<PVOID>(
+                                    headers->OptionalHeader.ImageBase),
+                                *p);
+                }
+                break;
+                case IMAGE_REL_BASED_ABSOLUTE:
+                case IMAGE_REL_BASED_HIGHLOW:
+                case IMAGE_REL_BASED_HIGH:
+                case IMAGE_REL_BASED_LOW:
+                default:
+                {
+                    // No need to fix absolute relocation it's just a dummy for
+                    // alignment. Other relocation types are not used in 64bit
+                    // binaries.
+                }
+                break;
             }
         }
 
         relocation = PIMAGE_BASE_RELOCATION(reinterpret_cast<char*>(relocation) +
-            relocation->SizeOfBlock);
+                                            relocation->SizeOfBlock);
     }
 }

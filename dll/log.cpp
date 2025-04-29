@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -23,12 +23,13 @@
 */
 
 #include "log.hpp"
+
 #include "misc.hpp"
 
-#include <string>
 #include <fstream>
-#include <stdexcept>
 #include <functional>
+#include <stdexcept>
+#include <string>
 
 int LogStreamBuffer::sync()
 {
@@ -40,31 +41,28 @@ int LogStreamBuffer::sync()
 
     return std::stringbuf::sync();
 }
-Log::Log(std::function<void(const std::string &)> callback)
-    : _buffer(callback), std::ostream(&_buffer) {}
+Log::Log(std::function<void(const std::string&)> callback)
+    : _buffer(callback), std::ostream(&_buffer)
+{
+}
 
-std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str)
+std::ostream& operator<<(std::ostream& _Ostr, const std::wstring& _Str)
 {
     return _Ostr << wstring_to_string(_Str);
 }
 
-Log gLog([] (const std::string &buff)
-{
-    auto const exe_path = get_exe_path();
-    auto const parent = exe_path.parent_path();
-    auto const log_path = parent / "log.txt";
+Log gLog(
+    [](const std::string& buff)
+    {
+        auto const exe_path = get_exe_path();
+        auto const parent = exe_path.parent_path();
+        auto const log_path = parent / "log.txt";
 
-    std::ofstream out(log_path, std::ios::app);
+        std::ofstream out(log_path, std::ios::app);
 
-    if (!out)
-        throw std::runtime_error("Failed to open log file");
+        if (!out)
+            throw std::runtime_error("Failed to open log file");
 
-    out << buff;
-    out.close();
-});
-
-Log gMbLog([] (const std::string &buf)
-{
-    ::MessageBoxA(nullptr, buf.c_str(), "DEBUG", 0);
-});
-
+        out << buff;
+        out.close();
+    });

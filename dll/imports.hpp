@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -24,14 +24,12 @@
 
 #pragma once
 
-#include <hadesmem/process.hpp>
-#include <hadesmem/pelib/pe_file.hpp>
-
 #include <Windows.h>
-
-#include <vector>
 #include <cstdint>
+#include <hadesmem/pelib/pe_file.hpp>
+#include <hadesmem/process.hpp>
+#include <vector>
 
-void rebuild_imports(const hadesmem::Process &process,
-    const hadesmem::PeFile &pe_file, PVOID rdata,
-    std::vector<std::uint8_t> &buffer);
+void rebuild_imports(const hadesmem::Process& process,
+                     const hadesmem::PeFile& pe_file, PVOID rdata,
+                     PVOID readonly_base, std::vector<std::uint8_t>& buffer);

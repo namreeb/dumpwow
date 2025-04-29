@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -26,4 +26,4 @@
 
 #include <Windows.h>
 
-void fix_relocation(PVOID base);
+void apply_relocations(PVOID base);
