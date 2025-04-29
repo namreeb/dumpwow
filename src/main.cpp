@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -25,48 +25,43 @@
 
 #include "raii_proc.hpp"
 
-#include <hadesmem/injector.hpp>
-#include <hadesmem/region_list.hpp>
-#include <hadesmem/module.hpp>
-#include <hadesmem/read.hpp>
-#include <hadesmem/write.hpp>
-#include <hadesmem/pelib/pe_file.hpp>
-#include <hadesmem/pelib/tls_dir.hpp>
-#include <hadesmem/find_pattern.hpp>
-
 #include <Windows.h>
-#include <intrin.h>
-
-#include <iostream>
-#include <vector>
-#include <string>
-#include <experimental/filesystem>
-#include <thread>
-#include <chrono>
-#include <fstream>
-#include <cstdio>
 #include <atomic>
-
-#pragma intrinsic(_ReturnAddress)
-
-#define CALL_FIRST  1
+#include <chrono>
+#include <cstdio>
+#include <experimental/filesystem>
+#include <fstream>
+#include <hadesmem/find_pattern.hpp>
+#include <hadesmem/injector.hpp>
+#include <hadesmem/module.hpp>
+#include <hadesmem/pelib/pe_file.hpp>
+#include <hadesmem/pelib/section_list.hpp>
+#include <hadesmem/pelib/tls_dir.hpp>
+#include <hadesmem/read.hpp>
+#include <hadesmem/region_list.hpp>
+#include <hadesmem/write.hpp>
+#include <intrin.h>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace fs = std::experimental::filesystem;
 
-bool launch_wow_suspended(const fs::path &path,
-    PROCESS_INFORMATION &proc_info);
-hadesmem::PeFile find_wow_pe(const hadesmem::Process &process);
-void *find_tls_callback_directory(const hadesmem::Process &process,
-    const hadesmem::PeFile &pe);
-BOOL ControlHandler(DWORD ctrl_type);
-bool FindVEHCallerRVA();
-size_t find_call_tls_initializers_rva();
-void process_log_file(const fs::path &exe_path);
+bool launch_wow_suspended(const fs::path& path, PROCESS_INFORMATION& proc_info);
+hadesmem::PeFile find_wow_pe(const hadesmem::Process& process, size_t& text_start,
+                             size_t& text_end);
+bool find_tls_offsets(size_t& ldrp_call_init_routine_rva,
+                      size_t& tls_callback_caller_rva,
+                      size_t& guard_dispatch_icall_offset);
+void* find_tls_callback_directory(const hadesmem::Process& process,
+                                  const hadesmem::PeFile& pe);
+BOOL control_handler(DWORD ctrl_type);
+void process_log_file(const fs::path& exe_path);
 
-size_t g_veh_caller_rva;
 std::atomic_bool g_exit_wow;
 
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
     if (argc != 2)
     {
@@ -74,11 +69,13 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    auto const call_tls_initializers_rva = find_call_tls_initializers_rva();
+    size_t ldrp_call_init_routine_rva, tls_callback_caller_rva,
+        guard_dispatch_icall_offset;
 
-    if (!call_tls_initializers_rva)
+    if (!find_tls_offsets(ldrp_call_init_routine_rva, tls_callback_caller_rva,
+                          guard_dispatch_icall_offset))
     {
-        std::cerr << "Failed to find LdrpCallTlsInitializers" << std::endl;
+        std::cerr << "Failed to find TLS offsets" << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -86,6 +83,12 @@ int main(int argc, char *argv[])
 
     try
     {
+        if (!::SetConsoleCtrlHandler(control_handler, TRUE))
+        {
+            std::cerr << "SetConsoleCtrlHandler failed" << std::endl;
+            return EXIT_FAILURE;
+        }
+
         PROCESS_INFORMATION proc_info;
         if (!launch_wow_suspended(path, proc_info))
         {
@@ -93,23 +96,25 @@ int main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
 
-        std::cout << "Wow PID:                " << proc_info.dwProcessId << std::endl;
+        std::cout << "Wow PID:                " << proc_info.dwProcessId
+                  << std::endl;
         g_exit_wow = false;
-      
+
         const hadesmem::Process process(proc_info.dwProcessId);
 
         // ensure process is killed upon exit
         const RaiiProc proc_killer(process.GetId());
 
-        auto const pe_file = find_wow_pe(process);
+        size_t text_start_rva, text_end_rva;
+        auto const pe_file = find_wow_pe(process, text_start_rva, text_end_rva);
 
         std::cout << "Wow base address:       0x" << std::hex
-            << reinterpret_cast<std::uintptr_t>(pe_file.GetBase())
-            << std::endl;
+                  << reinterpret_cast<std::uintptr_t>(pe_file.GetBase())
+                  << std::endl;
 
         // temporarily disable TLS callbacks to prevent them from executing
         // when we inject
-        auto const tls_callback_directory = 
+        auto const tls_callback_directory =
             find_tls_callback_directory(process, pe_file);
 
         if (!tls_callback_directory)
@@ -119,20 +124,20 @@ int main(int argc, char *argv[])
         }
 
         std::cout << "TLS callback directory: 0x" << std::hex
-            << reinterpret_cast<std::uintptr_t>(tls_callback_directory)
-            << std::endl;
+                  << reinterpret_cast<std::uintptr_t>(tls_callback_directory)
+                  << std::endl;
 
-        auto const first_callback = hadesmem::Read<void *>(process,
-            tls_callback_directory);
+        auto const first_callback =
+            hadesmem::Read<void*>(process, tls_callback_directory);
 
         std::cout << "First TLS callback:     0x" << std::hex
-            << reinterpret_cast<std::uintptr_t>(first_callback)
-            << std::endl;
+                  << reinterpret_cast<std::uintptr_t>(first_callback)
+                  << std::endl;
 
-        hadesmem::Write<void *>(process, tls_callback_directory, nullptr);
+        hadesmem::Write<void*>(process, tls_callback_directory, nullptr);
 
-        auto const verify = hadesmem::Read<void *>(process,
-            tls_callback_directory);
+        auto const verify =
+            hadesmem::Read<void*>(process, tls_callback_directory);
 
         if (verify)
         {
@@ -141,27 +146,23 @@ int main(int argc, char *argv[])
         }
 
         // with the TLS callbacks disabled, our DLL may be safely injected
-        const hadesmem::Module unpacker(process, hadesmem::InjectDll(process,
-            L"unpacker.dll", hadesmem::InjectFlags::kPathResolution));
+        const hadesmem::Module unpacker(
+            process, hadesmem::InjectDll(process, L"unpacker.dll",
+                                         hadesmem::InjectFlags::kPathResolution));
 
         // call init function in DLL
-        auto const func = reinterpret_cast<
-            void(*)(size_t, DWORD, PVOID, DWORD)>(
-            hadesmem::FindProcedure(process, unpacker, "Initialize"));
+        auto const func = reinterpret_cast<void (*)(
+            size_t, size_t, size_t, DWORD, PVOID, DWORD, size_t, size_t)>(
+            hadesmem::FindProcedure(process, unpacker, "DumpBinary"));
 
         hadesmem::Call(process, func, hadesmem::CallConv::kDefault,
-            call_tls_initializers_rva, proc_info.dwThreadId,
-            pe_file.GetBase(), pe_file.GetSize());
+                       ldrp_call_init_routine_rva, tls_callback_caller_rva,
+                       guard_dispatch_icall_offset, proc_info.dwThreadId,
+                       pe_file.GetBase(), pe_file.GetSize(), text_start_rva,
+                       text_end_rva);
 
         // restore first TLS callback
-        hadesmem::Write<void *>(process, tls_callback_directory,
-            first_callback);
-
-        if (!::SetConsoleCtrlHandler(ControlHandler, TRUE))
-        {
-            std::cerr << "SetConsoleCtrlHandler failed" << std::endl;
-            return EXIT_FAILURE;
-        }
+        hadesmem::Write<void*>(process, tls_callback_directory, first_callback);
 
         CONTEXT context;
         memset(&context, 0, sizeof(context));
@@ -180,8 +181,7 @@ int main(int argc, char *argv[])
         {
             if (g_exit_wow)
             {
-                std::cout << "Received CTRL-C.  Terminating wow..."
-                    << std::endl;
+                std::cout << "Received CTRL-C.  Terminating wow..." << std::endl;
                 ::TerminateProcess(process.GetHandle(), 0);
                 g_exit_wow = false;
             }
@@ -206,21 +206,20 @@ int main(int argc, char *argv[])
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         } while (true);
 
-        if (!::SetConsoleCtrlHandler(ControlHandler, FALSE))
+        if (!::SetConsoleCtrlHandler(control_handler, FALSE))
         {
             std::cerr << "SetConsoleCtrlHandler failed" << std::endl;
             return EXIT_FAILURE;
         }
 
         std::cout << "Wow exited with code:   0x" << std::hex << exit_code
-            << std::endl;
+                  << std::endl;
 
         process_log_file(path);
     }
-    catch (const std::exception &e)
+    catch (const std::exception& e)
     {
-        std::cerr << "Error:\n" << boost::diagnostic_information(e)
-            << std::endl;
+        std::cerr << "Error:\n" << boost::diagnostic_information(e) << std::endl;
         process_log_file(path);
         return EXIT_FAILURE;
     }
@@ -228,47 +227,7 @@ int main(int argc, char *argv[])
     return EXIT_SUCCESS;
 }
 
-LONG NTAPI VectoredExceptionHandler(struct _EXCEPTION_POINTERS *exceptionInfo)
-{
-    auto const return_address = reinterpret_cast<const std::uint8_t *>(
-        ::_ReturnAddress());
-    auto const base = reinterpret_cast<const std::uint8_t *>(
-        ::GetModuleHandle(L"ntdll"));
-
-    g_veh_caller_rva = return_address - base - 6;
-
-    return EXCEPTION_CONTINUE_EXECUTION;
-}
-
-// find the RVA of RtlpCallVectoredHandlers within NTDLL so we know where to
-// find it once we launch wow
-bool FindVEHCallerRVA()
-{
-    // first, add our own VEH
-    auto const veh_handle = ::AddVectoredExceptionHandler(CALL_FIRST,
-        &VectoredExceptionHandler);
-
-    if (!veh_handle)
-        return false;
-
-    // second, raise an exception
-    ::RaiseException(1, 0, 0, nullptr);
-
-    // third, remove the VEH
-    if (!::RemoveVectoredExceptionHandler(veh_handle))
-        return false;
-
-    // at this point, g_veh_caller_rva will have a value.  now check if it is
-    // valid
-    auto const call_site = reinterpret_cast<std::uint8_t *>(
-        GetModuleHandle(L"ntdll")) + g_veh_caller_rva;
-
-    // first byte of indirect call instruction is right?
-    return *call_site == 0xFF && *(call_site + 5) == 0;
-}
-
-bool launch_wow_suspended(const fs::path &path,
-    PROCESS_INFORMATION &proc_info)
+bool launch_wow_suspended(const fs::path& path, PROCESS_INFORMATION& proc_info)
 {
     // disable ASLR for subprocesses.  this will cause the base address used
     // in memory to match the base address that static analysis tools will use
@@ -290,9 +249,9 @@ bool launch_wow_suspended(const fs::path &path,
 
     DWORD64 attribute =
         PROCESS_CREATION_MITIGATION_POLICY_FORCE_RELOCATE_IMAGES_ALWAYS_OFF;
-    if (!::UpdateProcThreadAttribute(attribs, 0,
-        PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &attribute, sizeof(DWORD64),
-        nullptr, nullptr))
+    if (!::UpdateProcThreadAttribute(
+            attribs, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &attribute,
+            sizeof(DWORD64), nullptr, nullptr))
     {
         free(attribs);
         return false;
@@ -305,21 +264,23 @@ bool launch_wow_suspended(const fs::path &path,
 
     wchar_t path_raw[MAX_PATH];
     memcpy(&path_raw[0], path.wstring().c_str(),
-        (1 + path.wstring().length()) * sizeof(wchar_t));
+           (1 + path.wstring().length()) * sizeof(wchar_t));
 
-    auto const result = !!::CreateProcessW(path_raw, nullptr, nullptr,
-        nullptr, FALSE, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-        nullptr, nullptr, &start_info, &proc_info);
+    auto const result =
+        !!::CreateProcessW(path_raw, nullptr, nullptr, nullptr, FALSE,
+                           CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, nullptr,
+                           nullptr, &start_info, &proc_info);
 
     return result;
 }
 
-hadesmem::PeFile find_wow_pe(const hadesmem::Process &process)
+hadesmem::PeFile find_wow_pe(const hadesmem::Process& process, size_t& text_start,
+                             size_t& text_end)
 {
     const hadesmem::RegionList region_list(process);
 
     // find the PE header for wow
-    for (auto const &region : region_list)
+    for (auto const& region : region_list)
     {
         if (region.GetState() == MEM_FREE)
             continue;
@@ -334,8 +295,8 @@ hadesmem::PeFile find_wow_pe(const hadesmem::Process &process)
             continue;
 
         hadesmem::PeFile pe_file(process, region.GetBase(),
-            hadesmem::PeFileType::kImage,
-            static_cast<DWORD>(region.GetSize()));
+                                 hadesmem::PeFileType::kImage,
+                                 static_cast<DWORD>(region.GetSize()));
 
         std::vector<ULONGLONG> callbacks;
 
@@ -344,7 +305,7 @@ hadesmem::PeFile find_wow_pe(const hadesmem::Process &process)
             const hadesmem::TlsDir tls_dir(process, pe_file);
             tls_dir.GetCallbacks(std::back_inserter(callbacks));
         }
-        catch (const hadesmem::Error &)
+        catch (const hadesmem::Error&)
         {
             continue;
         }
@@ -353,105 +314,134 @@ hadesmem::PeFile find_wow_pe(const hadesmem::Process &process)
         if (callbacks.empty())
             continue;
 
-        return std::move(pe_file);
+        const hadesmem::SectionList sl {process, pe_file};
+
+        for (auto const& sec : sl)
+        {
+            if (sec.GetName() == ".text")
+            {
+                text_start = sec.GetVirtualAddress();
+                text_end = text_start + sec.GetSizeOfRawData();
+                return pe_file;
+            }
+        }
+
+        break;
     }
 
-    throw std::runtime_error("Could not find wow PE");
+    throw std::runtime_error("WoW PE header not found");
 }
 
-void *find_tls_callback_directory(const hadesmem::Process &process,
-    const hadesmem::PeFile &pe)
+void* find_tls_callback_directory(const hadesmem::Process& process,
+                                  const hadesmem::PeFile& pe)
 {
     try
     {
         const hadesmem::TlsDir tls_dir(process, pe);
-        return reinterpret_cast<void *>(tls_dir.GetAddressOfCallBacks());
+        return reinterpret_cast<void*>(tls_dir.GetAddressOfCallBacks());
     }
-    catch (const hadesmem::Error &)
+    catch (const hadesmem::Error&)
     {
         return nullptr;
     }
 }
 
-size_t find_call_tls_initializers_rva()
+bool find_tls_offsets(size_t& ldrp_call_init_routine_rva,
+                      size_t& tls_callback_caller_rva,
+                      size_t& guard_dispatch_icall_offset)
 {
     auto const ntdll = ::GetModuleHandle(L"ntdll");
 
     if (!ntdll)
-        return 0;
+        return false;
 
     const hadesmem::Process process(::GetCurrentProcessId());
 
-    // find "LdrpCallTlsInitializers"
-    auto const magic_value = hadesmem::Find(process, L"ntdll.dll",
-        L"4C 64 72 70 43 61 6C 6C 54 6C 73 49 "
-         "6E 69 74 69 61 6C 69 7A 65 72 73 00",
-        hadesmem::PatternFlags::kScanData,
-        0);
+    auto const peb_access = reinterpret_cast<uintptr_t>(
+        hadesmem::Find(process, L"ntdll.dll",
+                       L"48 89 54 24 ?? 44 89 44 24 ?? 65 48 8b 04 25 60 00 00 "
+                       L"00 48 8b 90 ?? 00 00 00",
+                       0, 0));
 
-    if (!magic_value)
-        return 0;
+    if (!peb_access)
+        return false;
 
-    const std::uint8_t *magic_value_ref = nullptr;
-
-    // find recurrences of the byte pattern which dereferences the magic value
-    // and check for one that actually is dereferencing it
-    for (auto p = hadesmem::Find(process, L"ntdll.dll",
-        L"4c 8d 05 ?? ?? ?? 00", 0, 0); p;)
-    {
-        auto const p_offset = reinterpret_cast<std::uint8_t *>(p) -
-            reinterpret_cast<std::uint8_t *>(ntdll);
-
-        auto const expected_offset = static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(magic_value) -
-            reinterpret_cast<std::uintptr_t>(p)) - 7;
-
-        auto const offset = hadesmem::Read<std::uint32_t>(process,
-            reinterpret_cast<unsigned char *>(p) + 3);
-
-        if (offset == expected_offset)
+    ldrp_call_init_routine_rva = 0;
+    for (auto i = 1; i < 60; ++i)
+        // did we find the start of alignment space?
+        if (hadesmem::Read<std::uint32_t>(
+                process, reinterpret_cast<PVOID>(peb_access - i)) == 0xCCCCCCCC)
         {
-            magic_value_ref = reinterpret_cast<const std::uint8_t *>(p);
+            ldrp_call_init_routine_rva =
+                peb_access - i + 4 - reinterpret_cast<uintptr_t>(ntdll);
             break;
         }
 
-        p = hadesmem::Find(process, L"ntdll.dll", L"4c 8d 05 ?? ?? ?? 00", 0,
-            p_offset);
-    }
+    if (!ldrp_call_init_routine_rva)
+        return false;
 
-    // not found?  give up
-    if (!magic_value_ref)
-        return 0;
+    auto const call_guard_dispatch = reinterpret_cast<uintptr_t>(hadesmem::Find(
+        process,
+        reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(ntdll) +
+                                ldrp_call_init_routine_rva),
+        0x200, L"48 8b ?? e8 ?? ?? ?? 00", 0, 0));
 
-    const std::uint8_t *func = nullptr;
+    if (!call_guard_dispatch)
+        return false;
 
-    // begin searching backwards for a few INT3 (0xCC) instructions to guess at
-    // the start of the function
-    for (int offset = 0; offset < 0x200; ++offset)
+    auto const offset = *reinterpret_cast<std::int32_t*>(call_guard_dispatch + 4);
+    auto const gdi = call_guard_dispatch + 8 + offset;
+
+    if (*reinterpret_cast<std::uint8_t*>(gdi) != 0xE9)
+        return false;
+
+    // compute the offset into LdrpCallInitRoutine of the call to
+    // guard_dispatch_icall
+    guard_dispatch_icall_offset = call_guard_dispatch + 3 -
+                                  reinterpret_cast<uintptr_t>(ntdll) -
+                                  ldrp_call_init_routine_rva;
+
+    uintptr_t start = 0u;
+
+    do
     {
-        auto const p = reinterpret_cast<const std::uint8_t *>(magic_value_ref)
-            - offset;
+        auto current = hadesmem::Find(process, L"ntdll.dll",
+                                      L"49 3b c0 74 ?? 45 33 c0 e8 ?? ?? ?? 00 "
+                                      L"b8 01 00 00 00 48 83 c4 28 c3 cc",
+                                      0, start);
 
-        if (*p != 0xCC &&
-            *(p - 1) == 0xCC &&
-            *(p - 2) == 0xCC &&
-            *(p - 3) == 0xCC &&
-            *(p - 4) == 0xCC)
+        if (!current)
+            return false;
+
+        auto const c = reinterpret_cast<uintptr_t>(current);
+
+        auto const rel_jump = *reinterpret_cast<std::int32_t*>(c + 9);
+        auto const func = c + 13 + rel_jump;
+
+        // did we find the right function call?  if so, find the start of the
+        // function and return
+        if (func == gdi)
         {
-            func = p;
+            start = c;
             break;
         }
-    }
 
-    // function start not found?  give up
-    if (!func)
-        return 0;
+        // if not, keep searching
+        start = c + 0x15;
+    } while (true);
 
-    return static_cast<std::uint64_t>(func -
-        reinterpret_cast<const std::uint8_t *>(ntdll));
+    for (auto i = 1u; i < 30; ++i)
+        if (*reinterpret_cast<std::uint32_t*>(start - i) == 0xCCCCCCCC)
+        {
+            tls_callback_caller_rva =
+                start - i + 4 - reinterpret_cast<uintptr_t>(ntdll);
+            return true;
+        }
+
+    return false;
 }
 
-void process_log_file(const fs::path &exe_path)
+void process_log_file(const fs::path& exe_path)
 {
     auto const parent = exe_path.parent_path();
     auto const log_path = parent / "log.txt";
@@ -472,13 +462,12 @@ void process_log_file(const fs::path &exe_path)
     file_data[file_data.size() - 1] = '\0';
     in.close();
 
-
     std::cout << "\nLog:\n\n" << &file_data[0];
 
     std::remove(log_path.string().c_str());
 }
 
-BOOL ControlHandler(DWORD ctrl_type)
+BOOL control_handler(DWORD ctrl_type)
 {
     if (ctrl_type == CTRL_C_EVENT)
     {
@@ -487,7 +476,7 @@ BOOL ControlHandler(DWORD ctrl_type)
     }
 
     std::cout << "Received unrecognized event: " << std::dec << ctrl_type
-        << std::endl;
+              << std::endl;
 
     return FALSE;
 }

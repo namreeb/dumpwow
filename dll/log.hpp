@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -24,34 +24,33 @@
 
 #pragma once
 
+#include <functional>
 #include <ostream>
 #include <sstream>
-#include <functional>
 
 class LogStreamBuffer : public std::stringbuf
 {
-    private:
-        std::function<void(const std::string &)> _callback;
+private:
+    std::function<void(const std::string&)> _callback;
 
-    public:
-        LogStreamBuffer(std::function<void(const std::string &)> callback)
-            : _callback(callback) {}
-        int sync();
+public:
+    LogStreamBuffer(std::function<void(const std::string&)> callback)
+        : _callback(callback)
+    {
+    }
+    int sync();
 };
 
 class Log : public std::ostream
 {
-    private:
-        LogStreamBuffer _buffer;
+private:
+    LogStreamBuffer _buffer;
 
-    public:
-        Log(std::function<void(const std::string &)> callback);
+public:
+    Log(std::function<void(const std::string&)> callback);
 };
 
-std::ostream & operator << (std::ostream &_Ostr, const std::wstring &_Str);
+std::ostream& operator<<(std::ostream& _Ostr, const std::wstring& _Str);
 
 // log to file
 extern Log gLog;
-
-// show a message box
-extern Log gMbLog;

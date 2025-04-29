@@ -1,7 +1,7 @@
 /*
     MIT License
 
-    Copyright (c) 2020 namreeb (legal@namreeb.org) http://github.com/namreeb/dumpwow
+    Copyright (c) 2025 namreeb http://github.com/namreeb/dumpwow
 
     Permission is hereby granted, free of charge, to any person obtaining a copy
     of this software and associated documentation files (the "Software"), to deal
@@ -24,38 +24,20 @@
 
 #include "misc.hpp"
 
-#include <hadesmem/pelib/pe_file.hpp>
-
-#include <vector>
 #include <cstdint>
 #include <fstream>
+#include <hadesmem/pelib/pe_file.hpp>
+#include <vector>
 
 fs::path get_exe_path()
 {
     TCHAR filename[1024];
-    if (!::GetModuleFileName(nullptr, filename, 
-                             sizeof(filename) / sizeof(TCHAR)))
+    if (!::GetModuleFileName(nullptr, filename, sizeof(filename) / sizeof(TCHAR)))
     {
         throw std::runtime_error("GetModuleFileName() failed");
     }
 
     return fs::path(filename);
-}
-
-std::vector<std::uint8_t> read_pe_header_from_exe(const fs::path &exe, DWORD size)
-{
-    std::vector<std::uint8_t> result(size);
-
-    std::ifstream in(exe, std::ios::binary);
-
-    if (!in)
-        throw std::runtime_error("Failed to read PE header from binary");
-
-    in.read(reinterpret_cast<char *>(&result[0]),
-        static_cast<std::streamsize>(result.size()));
-    in.close();
-
-    return std::move(result);
 }
 
 // modified from https://stackoverflow.com/a/9194117
