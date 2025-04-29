@@ -32,4 +32,4 @@
 
 void rebuild_imports(const hadesmem::Process& process,
                      const hadesmem::PeFile& pe_file, PVOID rdata,
-                     std::vector<std::uint8_t>& buffer);
+                     PVOID readonly_base, std::vector<std::uint8_t>& buffer);

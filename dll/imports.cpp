@@ -227,7 +227,7 @@ public:
                         0)
                         write<std::uint8_t>(0);
 
-                    gLog << "Thunk RVA: +0x" << std::hex << thunk_rva << " -> "
+                    gLog << "Thunk RVA:  +0x" << std::hex << thunk_rva << " -> "
                          << current_module << "!" << exp.GetName()
                          << " <ordinal 0x" << std::hex
                          << exp.GetForwarderOrdinal() << "> (ordinal forward)"
@@ -256,7 +256,7 @@ public:
                         0)
                         write<std::uint8_t>(0);
 
-                    gLog << "Thunk RVA: +0x" << std::hex << thunk_rva << " -> "
+                    gLog << "Thunk RVA:  +0x" << std::hex << thunk_rva << " -> "
                          << current_module << "!" << exp.GetName()
                          << " (name forward)" << std::endl;
 
@@ -293,7 +293,7 @@ public:
                     0)
                     write<std::uint8_t>(0);
 
-                gLog << "Thunk RVA: +0x" << std::hex << thunk_rva << " -> "
+                gLog << "Thunk RVA:  +0x" << std::hex << thunk_rva << " -> "
                      << module.GetName() << "!" << e.GetName() << std::endl;
 
                 import_dir.thunks.push_back(thunk_data);
@@ -400,27 +400,43 @@ hadesmem::Section add_section(const hadesmem::Process& process,
 
 void rebuild_imports(const hadesmem::Process& process,
                      const hadesmem::PeFile& pe_file, PVOID rdata,
-                     std::vector<std::uint8_t>& buffer)
+                     PVOID readonly_base, std::vector<std::uint8_t>& buffer)
 {
+    // this many consecutive null pointers will be interpreted as the end of the
+    // imports
+    static auto constexpr max_consecutive_nulls = 5;
+    int null_count = 0;
+
+    static auto constexpr max_errors = 10;
+    int error_count = 0;
+
     // step one, create a new section for the import data.  while some generic
     // tools will attempt to expand the .rdata section, experimentally this is
     // not possible for wow.
     auto new_section = add_section(process, pe_file);
 
     const hadesmem::Region import_region(process, rdata);
+    const hadesmem::Region readonly_region(process, readonly_base);
 
-    auto const base = import_region.GetAllocBase();
+    auto const readonly_start = reinterpret_cast<uintptr_t>(readonly_base);
+    auto const readonly_end = readonly_start + readonly_region.GetSize();
+
+    auto const base = reinterpret_cast<uintptr_t>(import_region.GetAllocBase());
 
     auto const rdata_va =
-        static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(rdata) -
-                           reinterpret_cast<std::uintptr_t>(base));
+        static_cast<DWORD>(reinterpret_cast<uintptr_t>(rdata) - base);
 
     // assemble results within this structure
     ImportTable import_table(pe_file, new_section.GetVirtualAddress(), rdata_va);
 
     auto const import_region_end = reinterpret_cast<PVOID>(
-        reinterpret_cast<std::uintptr_t>(import_region.GetBase()) +
-        import_region.GetSize());
+        reinterpret_cast<uintptr_t>(rdata) + import_region.GetSize());
+
+#ifdef _DEBUG
+    gLog << "pe_file.GetBase(): 0x" << pe_file.GetBase() << "\nbase: 0x" << base
+         << "\nrdata: 0x" << rdata << " region end: 0x" << import_region_end
+         << std::endl;
+#endif
 
     // when true, the next function will force creation of a new import
     // directory
@@ -430,26 +446,39 @@ void rebuild_imports(const hadesmem::Process& process,
     for (auto current_import = reinterpret_cast<PVOID*>(rdata);
          current_import < import_region_end; ++current_import)
     {
+        if (reinterpret_cast<uintptr_t>(*current_import) >= readonly_start &&
+            reinterpret_cast<uintptr_t>(*current_import) <= readonly_end)
+        {
+            auto const old = *current_import;
+            auto const rva =
+                reinterpret_cast<uintptr_t>(*current_import) - readonly_start;
+            *current_import = reinterpret_cast<PVOID>(base + rva);
+        }
+
         auto const thunk_ea = *current_import;
 
         auto const import_rva = static_cast<DWORD>(
-            reinterpret_cast<std::uintptr_t>(current_import) -
-            reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
-        auto const thunk_rva = static_cast<DWORD>(
-            reinterpret_cast<std::uintptr_t>(thunk_ea) -
-            reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
-
-#ifdef _DEBUG
-        gLog << "Import RVA: +0x" << std::hex << import_rva << " Thunk EA: 0x"
-             << reinterpret_cast<std::uintptr_t>(thunk_ea) << " Thunk RVA: +0x"
-             << thunk_rva << std::endl;
-#endif
+            reinterpret_cast<std::uintptr_t>(current_import) - base);
+        auto const thunk_rva =
+            static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(thunk_ea) - base);
 
         if (!thunk_ea)
         {
+            if (++null_count >= max_consecutive_nulls)
+                break;
+
             force_new_import_dir = true;
             continue;
         }
+
+        null_count = 0;
+
+        std::stringstream log;
+
+#ifdef _DEBUG
+        log << "Import RVA: +0x" << std::hex << import_rva << " Thunk EA: 0x"
+            << thunk_ea << " Thunk RVA: +0x" << thunk_rva << "\n";
+#endif
 
         // if the thunk ea is not sane, skip it.  this heuristic is not
         // necessary but greatly speeds up the process.  without it, each
@@ -457,9 +486,14 @@ void rebuild_imports(const hadesmem::Process& process,
         // when hadesmem calls VirtualQueryEx() and it fails.
         if (reinterpret_cast<std::uint64_t>(thunk_ea) >> 0x30)
         {
-            gLog << "Bad thunk ea RVA: 0x" << std::hex << import_rva
-                 << " thunk_ea: 0x" << std::hex
-                 << reinterpret_cast<std::uintptr_t>(thunk_ea) << std::endl;
+            log << "Bad thunk ea RVA: 0x" << std::hex << import_rva
+                << " thunk_ea: 0x" << std::hex
+                << reinterpret_cast<std::uintptr_t>(thunk_ea);
+
+            gLog << log.str() << std::endl;
+
+            if (++error_count >= max_errors)
+                break;
 
             continue;
         }
@@ -477,12 +511,16 @@ void rebuild_imports(const hadesmem::Process& process,
                     reinterpret_cast<std::uintptr_t>(current_import) -
                     reinterpret_cast<std::uintptr_t>(pe_file.GetBase()));
 
-                gLog
-                    << "[Import Resolution]: Skipping import from +0x" << std::hex
+                log << "[Import Resolution]: Skipping import from +0x" << std::hex
                     << rva
                     << " because it points to unreadble "
-                       "PAGE_EXECUTE memory.  If you see this, please file a bug."
-                    << std::endl;
+                       "PAGE_EXECUTE memory.  If you see this, please file a "
+                       "bug.";
+
+                gLog << log.str() << std::endl;
+
+                if (++error_count > max_errors)
+                    break;
 
                 continue;
             }
@@ -496,11 +534,12 @@ void rebuild_imports(const hadesmem::Process& process,
 
             if (!conclic_begin(thunk_ea, ctx))
             {
-#ifdef _DEBUG
-                gLog << "concolic failed RVA: 0x" << std::hex << import_rva
-                     << " thunk_ea: 0x" << std::hex
-                     << reinterpret_cast<std::uintptr_t>(thunk_ea) << std::endl;
-#endif
+                log << "concolic failed";
+                gLog << log.str() << std::endl;
+
+                if (++error_count >= max_errors)
+                    break;
+
                 continue;
             }
 
@@ -511,6 +550,8 @@ void rebuild_imports(const hadesmem::Process& process,
                                       force_new_import_dir);
 
             force_new_import_dir = false;
+
+            gLog << log.str() << std::endl;
         }
         catch (const std::exception&
 #ifdef _DEBUG

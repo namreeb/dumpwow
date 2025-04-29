@@ -50,11 +50,12 @@ fs::path get_output_path(const fs::path& input_path);
 PVOID find_remapped_base(const hadesmem::Process& process, PVOID base);
 void repair_binary_in_memory(const fs::path& path,
                              const hadesmem::Process& process, PVOID base,
-                             DWORD pe_size,
+                             PVOID readonly_base, DWORD pe_size,
                              std::vector<std::uint8_t>& import_data);
 
 void do_dump(PVOID base, DWORD pe_size, PVOID init_func)
 {
+    auto const readonly_base = base;
     auto const exe_path = get_exe_path();
     auto const output_path = get_output_path(exe_path);
     const size_t init_func_rva =
@@ -66,7 +67,8 @@ void do_dump(PVOID base, DWORD pe_size, PVOID init_func)
     base = find_remapped_base(process, base);
 
     std::vector<std::uint8_t> import_data;
-    repair_binary_in_memory(exe_path, process, base, pe_size, import_data);
+    repair_binary_in_memory(exe_path, process, base, readonly_base, pe_size,
+                            import_data);
 
     std::ofstream out(output_path, std::ios::binary);
 
@@ -166,7 +168,7 @@ std::vector<std::uint8_t> read_from_exe(const fs::path& exe, size_t offset,
 
 void repair_binary_in_memory(const fs::path& path,
                              const hadesmem::Process& process, PVOID base,
-                             DWORD pe_size,
+                             PVOID readonly_base, DWORD pe_size,
                              std::vector<std::uint8_t>& import_data)
 {
     // read PE header and first chunk of data from EXE file, everything up to the
@@ -266,7 +268,7 @@ void repair_binary_in_memory(const fs::path& path,
     // these calls we will perform a concolic execution of the trampolines
     // and see what function pointer results.
     if (rdata)
-        ; // rebuild_imports(process, pe_file, rdata, import_data);
+        rebuild_imports(process, pe_file, rdata, readonly_base, import_data);
     else
         gLog << "Did not find .rdata section.  Skipping import resolution."
              << std::endl;
