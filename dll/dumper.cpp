@@ -30,7 +30,6 @@
 #include <Windows.h>
 #include <cassert>
 #include <cstring>
-#include <experimental/filesystem>
 #include <fstream>
 #include <hadesmem/module.hpp>
 #include <hadesmem/pelib/export_dir.hpp>
@@ -43,8 +42,6 @@
 #include <hadesmem/region_list.hpp>
 #include <stdexcept>
 #include <vector>
-
-namespace fs = std::experimental::filesystem;
 
 fs::path get_output_path(const fs::path& input_path);
 PVOID find_remapped_base(const hadesmem::Process& process, PVOID base);

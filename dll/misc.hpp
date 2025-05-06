@@ -24,16 +24,14 @@
 
 #pragma once
 
-#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
-
 #include <Windows.h>
 #include <cstdint>
 #include <exception>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <hadesmem/region.hpp>
 #include <vector>
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 fs::path get_exe_path();
 DWORD round_up(DWORD numToRound, DWORD multiple);

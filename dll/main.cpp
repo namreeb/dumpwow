@@ -41,7 +41,6 @@
 // protect against TLS callbacks interfering with our task
 void InitializeTLSProtection(const hadesmem::Process& process,
                              size_t ldrp_call_init_routine_rva,
-                             size_t tls_callback_caller_rva,
                              size_t guard_dispatch_icall_offset, PVOID wow_base,
                              DWORD main_thread_id, size_t text_start_rva,
                              size_t text_end_rva);
@@ -69,10 +68,9 @@ static std::vector<TlsCallbackEntry> tls_callback_history;
 static PVOID g_tls_callbacks;
 
 extern "C" __declspec(dllexport) void
-DumpBinary(size_t ldrp_call_init_routine_rva, size_t tls_callback_caller_rva,
-           size_t guard_dispatch_icall_offset, DWORD main_thread_id,
-           PVOID wow_base, DWORD wow_pe_size, size_t text_start_rva,
-           size_t text_end_rva)
+DumpBinary(size_t ldrp_call_init_routine_rva, size_t guard_dispatch_icall_offset,
+           DWORD main_thread_id, PVOID wow_base, DWORD wow_pe_size,
+           size_t text_start_rva, size_t text_end_rva)
 {
     tls_callback_history.clear();
     tls_callback_history.reserve(10);
@@ -88,7 +86,6 @@ DumpBinary(size_t ldrp_call_init_routine_rva, size_t tls_callback_caller_rva,
             reinterpret_cast<PVOID>(tls_dir.GetAddressOfCallBacks());
 
         InitializeTLSProtection(process, ldrp_call_init_routine_rva,
-                                tls_callback_caller_rva,
                                 guard_dispatch_icall_offset, wow_base,
                                 main_thread_id, text_start_rva, text_end_rva);
 
@@ -186,14 +183,12 @@ void __fastcall log_tls(PVOID base, DWORD reason, PVOID callback)
 
 void InitializeTLSProtection(const hadesmem::Process& process,
                              size_t ldrp_call_init_routine_rva,
-                             size_t tls_callback_caller_rva,
                              size_t guard_dispatch_icall_offset, PVOID wow_base,
                              DWORD main_thread_id, size_t text_start_rva,
                              size_t text_end_rva)
 {
     auto const ntdll = reinterpret_cast<uintptr_t>(::GetModuleHandle(L"ntdll"));
 
-    auto const tls_callback_caller = ntdll + tls_callback_caller_rva;
     auto const ldrp_call_init_routine = ntdll + ldrp_call_init_routine_rva;
 
     // address of where guard_dispatch_icall is called for TLS callbacks
@@ -208,7 +203,15 @@ void InitializeTLSProtection(const hadesmem::Process& process,
 
     if (hadesmem::Read<std::uint8_t>(
             process, reinterpret_cast<PVOID>(guard_dispatch_icall)) != 0xE9)
-        throw std::runtime_error("Did not find JMP in guard_dispatch_icall");
+    {
+        std::stringstream str;
+        str << "Did not find JMP in guard_dispatch_icall.  RVA: 0x" << std::hex
+            << (guard_dispatch_icall - ntdll) << " bytes: 0x"
+            << hadesmem::Read<std::uint32_t>(
+                   process, reinterpret_cast<PVOID>(guard_dispatch_icall))
+            << std::dec << ".";
+        throw std::runtime_error(str.str());
+    }
 
     auto const jmp_dest =
         guard_dispatch_icall + 5u +

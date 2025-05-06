@@ -21,7 +21,6 @@
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 */
-#define _SILENCE_EXPERIMENTAL_FILESYSTEM_DEPRECATION_WARNING
 
 #include "raii_proc.hpp"
 
@@ -29,7 +28,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
-#include <experimental/filesystem>
+#include <filesystem>
 #include <fstream>
 #include <hadesmem/find_pattern.hpp>
 #include <hadesmem/injector.hpp>
@@ -46,19 +45,18 @@
 #include <thread>
 #include <vector>
 
-namespace fs = std::experimental::filesystem;
+namespace fs = std::filesystem;
 
 bool launch_wow_suspended(const fs::path& path, PROCESS_INFORMATION& proc_info);
 hadesmem::PeFile find_wow_pe(const hadesmem::Process& process, size_t& text_start,
                              size_t& text_end);
-bool find_tls_offsets(size_t& ldrp_call_init_routine_rva,
-                      size_t& tls_callback_caller_rva,
-                      size_t& guard_dispatch_icall_offset);
 void* find_tls_callback_directory(const hadesmem::Process& process,
                                   const hadesmem::PeFile& pe);
 BOOL control_handler(DWORD ctrl_type);
 void process_log_file(const fs::path& exe_path);
 
+size_t ldrp_call_init_routine_rva = 0;
+size_t guard_dispatch_icall_offset = 0;
 std::atomic_bool g_exit_wow;
 
 int main(int argc, char* argv[])
@@ -66,16 +64,6 @@ int main(int argc, char* argv[])
     if (argc != 2)
     {
         std::cerr << "Usage: " << argv[0] << " <wow.exe>" << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    size_t ldrp_call_init_routine_rva, tls_callback_caller_rva,
-        guard_dispatch_icall_offset;
-
-    if (!find_tls_offsets(ldrp_call_init_routine_rva, tls_callback_caller_rva,
-                          guard_dispatch_icall_offset))
-    {
-        std::cerr << "Failed to find TLS offsets" << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -151,15 +139,14 @@ int main(int argc, char* argv[])
                                          hadesmem::InjectFlags::kPathResolution));
 
         // call init function in DLL
-        auto const func = reinterpret_cast<void (*)(
-            size_t, size_t, size_t, DWORD, PVOID, DWORD, size_t, size_t)>(
+        auto const func = reinterpret_cast<void (*)(size_t, size_t, DWORD, PVOID,
+                                                    DWORD, size_t, size_t)>(
             hadesmem::FindProcedure(process, unpacker, "DumpBinary"));
 
         hadesmem::Call(process, func, hadesmem::CallConv::kDefault,
-                       ldrp_call_init_routine_rva, tls_callback_caller_rva,
-                       guard_dispatch_icall_offset, proc_info.dwThreadId,
-                       pe_file.GetBase(), pe_file.GetSize(), text_start_rva,
-                       text_end_rva);
+                       ldrp_call_init_routine_rva, guard_dispatch_icall_offset,
+                       proc_info.dwThreadId, pe_file.GetBase(), pe_file.GetSize(),
+                       text_start_rva, text_end_rva);
 
         // restore first TLS callback
         hadesmem::Write<void*>(process, tls_callback_directory, first_callback);
@@ -346,60 +333,26 @@ void* find_tls_callback_directory(const hadesmem::Process& process,
     }
 }
 
-bool find_tls_offsets(size_t& ldrp_call_init_routine_rva,
-                      size_t& tls_callback_caller_rva,
-                      size_t& guard_dispatch_icall_offset)
+bool find_tls_offsets(size_t& tls_callback_caller_rva)
 {
-    auto const ntdll = ::GetModuleHandle(L"ntdll");
+    if (!ldrp_call_init_routine_rva || !guard_dispatch_icall_offset)
+        return false;
+
+    auto const ntdll = reinterpret_cast<uintptr_t>(::GetModuleHandle(L"ntdll"));
 
     if (!ntdll)
         return false;
 
     const hadesmem::Process process(::GetCurrentProcessId());
 
-    auto const peb_access = reinterpret_cast<uintptr_t>(
-        hadesmem::Find(process, L"ntdll.dll",
-                       L"48 89 54 24 ?? 44 89 44 24 ?? 65 48 8b 04 25 60 00 00 "
-                       L"00 48 8b 90 ?? 00 00 00",
-                       0, 0));
+    auto const call_guard_dispatch =
+        ntdll + ldrp_call_init_routine_rva + guard_dispatch_icall_offset;
 
-    if (!peb_access)
-        return false;
-
-    ldrp_call_init_routine_rva = 0;
-    for (auto i = 1; i < 60; ++i)
-        // did we find the start of alignment space?
-        if (hadesmem::Read<std::uint32_t>(
-                process, reinterpret_cast<PVOID>(peb_access - i)) == 0xCCCCCCCC)
-        {
-            ldrp_call_init_routine_rva =
-                peb_access - i + 4 - reinterpret_cast<uintptr_t>(ntdll);
-            break;
-        }
-
-    if (!ldrp_call_init_routine_rva)
-        return false;
-
-    auto const call_guard_dispatch = reinterpret_cast<uintptr_t>(hadesmem::Find(
-        process,
-        reinterpret_cast<PVOID>(reinterpret_cast<uintptr_t>(ntdll) +
-                                ldrp_call_init_routine_rva),
-        0x200, L"48 8b ?? e8 ?? ?? ?? 00", 0, 0));
-
-    if (!call_guard_dispatch)
-        return false;
-
-    auto const offset = *reinterpret_cast<std::int32_t*>(call_guard_dispatch + 4);
-    auto const gdi = call_guard_dispatch + 8 + offset;
+    auto const offset = *reinterpret_cast<std::int32_t*>(call_guard_dispatch + 1);
+    auto const gdi = call_guard_dispatch + 5 + offset;
 
     if (*reinterpret_cast<std::uint8_t*>(gdi) != 0xE9)
         return false;
-
-    // compute the offset into LdrpCallInitRoutine of the call to
-    // guard_dispatch_icall
-    guard_dispatch_icall_offset = call_guard_dispatch + 3 -
-                                  reinterpret_cast<uintptr_t>(ntdll) -
-                                  ldrp_call_init_routine_rva;
 
     uintptr_t start = 0u;
 
@@ -433,8 +386,7 @@ bool find_tls_offsets(size_t& ldrp_call_init_routine_rva,
     for (auto i = 1u; i < 30; ++i)
         if (*reinterpret_cast<std::uint32_t*>(start - i) == 0xCCCCCCCC)
         {
-            tls_callback_caller_rva =
-                start - i + 4 - reinterpret_cast<uintptr_t>(ntdll);
+            tls_callback_caller_rva = start - i + 4 - ntdll;
             return true;
         }
 
@@ -480,3 +432,43 @@ BOOL control_handler(DWORD ctrl_type)
 
     return FALSE;
 }
+
+void NTAPI find_ldrp_call_init_routine(PVOID, DWORD, PVOID)
+{
+    auto const ret_addr = reinterpret_cast<uintptr_t>(_ReturnAddress());
+
+    auto const ntdll = reinterpret_cast<uintptr_t>(::GetModuleHandle(L"ntdll"));
+
+    ldrp_call_init_routine_rva = 0;
+
+    const hadesmem::Process process(::GetCurrentProcessId());
+
+    for (auto i = 1; i < 0x100; ++i)
+        // did we find the start of alignment space?
+        if (hadesmem::Read<std::uint32_t>(
+                process, reinterpret_cast<PVOID>(ret_addr - i)) == 0xCCCCCCCC)
+        {
+
+            if (!ntdll)
+            {
+                std::cerr << "ntdll not found" << std::endl;
+                ::ExitProcess(EXIT_FAILURE);
+            }
+
+            ldrp_call_init_routine_rva = ret_addr - i + 4 - ntdll;
+            guard_dispatch_icall_offset =
+                ret_addr - 5 - ldrp_call_init_routine_rva - ntdll;
+
+            break;
+        }
+}
+
+#pragma section(".CRT$XLB", long, read)
+
+extern "C"
+{
+    __declspec(allocate(".CRT$XLB")) PIMAGE_TLS_CALLBACK pTLSCallback =
+        find_ldrp_call_init_routine;
+}
+
+#pragma comment(linker, "/INCLUDE:pTLSCallback")

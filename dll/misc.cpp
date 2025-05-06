@@ -24,6 +24,7 @@
 
 #include "misc.hpp"
 
+#include <Windows.h>
 #include <cstdint>
 #include <fstream>
 #include <hadesmem/pelib/pe_file.hpp>
@@ -47,11 +48,16 @@ DWORD round_up(DWORD numToRound, DWORD multiple)
     return ((numToRound + multiple - 1) / multiple) * multiple;
 }
 
-// taken from https://stackoverflow.com/a/18374698
 std::string wstring_to_string(const std::wstring& str)
 {
-    using convert_typeX = std::codecvt_utf8<wchar_t>;
-    std::wstring_convert<convert_typeX, wchar_t> converterX;
+    if (str.empty())
+        return {};
 
-    return converterX.to_bytes(str);
+    auto const size_needed = WideCharToMultiByte(
+        CP_UTF8, 0, str.data(), (int)str.size(), nullptr, 0, nullptr, nullptr);
+
+    std::string result(size_needed, 0);
+    WideCharToMultiByte(CP_UTF8, 0, str.data(), (int)str.size(), &result[0],
+                        size_needed, nullptr, nullptr);
+    return result;
 }
