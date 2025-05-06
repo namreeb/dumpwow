@@ -203,7 +203,15 @@ void InitializeTLSProtection(const hadesmem::Process& process,
 
     if (hadesmem::Read<std::uint8_t>(
             process, reinterpret_cast<PVOID>(guard_dispatch_icall)) != 0xE9)
-        throw std::runtime_error("Did not find JMP in guard_dispatch_icall");
+    {
+        std::stringstream str;
+        str << "Did not find JMP in guard_dispatch_icall.  RVA: 0x" << std::hex
+            << (guard_dispatch_icall - ntdll) << " bytes: 0x"
+            << hadesmem::Read<std::uint32_t>(
+                   process, reinterpret_cast<PVOID>(guard_dispatch_icall))
+            << std::dec << ".";
+        throw std::runtime_error(str.str());
+    }
 
     auto const jmp_dest =
         guard_dispatch_icall + 5u +
